@@ -319,7 +319,7 @@ fn main() {
     }
     let mc: usize = std::env::args().skip(1).find_map(|s| s.parse().ok()).unwrap_or(40);
     let scr = Screen { dist: 3.0, mu: 0.5 };
-    let fps = 240.0;
+    let fps: f64 = std::env::var("FPS").ok().and_then(|v| v.parse().ok()).unwrap_or(240.0);
     let fdt = 1.0 / fps;
     // 참 스크린: k_t (천 스크린은 2/7 보다 작을 수 있다), e = 0.3
     let shots = [("드라이버", 167.0, 10.9, 2686.0), ("7번", 120.0, 16.3, 7097.0), ("아마7번", 100.0, 18.0, 6000.0), ("웨지", 86.0, 25.7, 8403.0)];
