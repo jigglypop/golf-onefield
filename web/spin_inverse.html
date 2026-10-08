@@ -1,0 +1,638 @@
+<title>스핀 역보정기</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@500;600;700&family=IBM+Plex+Sans+KR:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+/* 배치: 왼쪽 계측 패널(입력) | 오른쪽 결과(판독 숫자 → 지형도 → 궤적). 런치 모니터 판독기처럼 숫자가 주인공. */
+:root {
+  --bg: #eef1f3;
+  --panel: #ffffff;
+  --ink: #15212b;
+  --muted: #5d6b77;
+  --line: #d3dbe1;
+  --accent: #d9480f;      /* 깃발 주황 */
+  --turf: #2b7a4b;        /* 페어웨이 */
+  --sky: #2f6fae;
+  --ok: #2b7a4b;
+  --warn: #b7791f;
+  --display: "Barlow Condensed", "Arial Narrow", sans-serif;
+  --body: "IBM Plex Sans KR", "Apple SD Gothic Neo", "Malgun Gothic", system-ui, sans-serif;
+  --mono: "IBM Plex Mono", ui-monospace, Menlo, monospace;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0f161c; --panel: #16212a; --ink: #e6edf2; --muted: #93a3b0; --line: #2a3843;
+    --accent: #ff7a3d; --turf: #4fbf7f; --sky: #6aa8e6; --ok: #4fbf7f; --warn: #e0a84a; color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #0f161c; --panel: #16212a; --ink: #e6edf2; --muted: #93a3b0; --line: #2a3843;
+  --accent: #ff7a3d; --turf: #4fbf7f; --sky: #6aa8e6; --ok: #4fbf7f; --warn: #e0a84a; color-scheme: dark;
+}
+* { box-sizing: border-box; }
+body { background: var(--bg); color: var(--ink); font: 15px/1.55 var(--body); padding-inline: 16px; padding-block: 20px 40px; }
+.wrap { max-width: 1180px; margin: 0 auto; display: grid; gap: 18px; }
+header h1 { font: 700 2.1rem/1.05 var(--display); letter-spacing: .01em; margin: 0; text-wrap: balance; }
+header p { margin: 6px 0 0; color: var(--muted); max-width: 70ch; }
+.grid { display: grid; grid-template-columns: minmax(0, 330px) minmax(0, 1fr); gap: 18px; align-items: start; }
+@media (max-width: 860px) { .grid { grid-template-columns: minmax(0, 1fr); } }
+.panel { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 16px; display: grid; gap: 14px; min-width: 0; }
+.panel h2 { font: 600 .78rem/1 var(--body); text-transform: uppercase; letter-spacing: .08em; color: var(--muted); margin: 0; }
+label { display: grid; gap: 4px; font-size: .86rem; color: var(--muted); }
+.row { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+input, select, textarea { font: 500 .95rem var(--mono); color: var(--ink); background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 7px 8px; width: 100%; }
+input[type=range] { padding: 0; accent-color: var(--accent); background: transparent; border: 0; }
+textarea { min-height: 90px; font-size: .8rem; resize: vertical; }
+input:focus-visible, select:focus-visible, textarea:focus-visible, button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.val { font: 500 .85rem var(--mono); color: var(--ink); }
+button { font: 600 .95rem var(--body); border-radius: 7px; padding: 10px 14px; cursor: pointer; border: 1px solid var(--accent); }
+button.primary { background: var(--accent); color: #fff; }
+button.ghost { background: transparent; color: var(--accent); }
+.btns { display: flex; flex-wrap: wrap; gap: 8px; }
+.note { font-size: .8rem; color: var(--muted); margin: 0; }
+.readouts { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }
+@media (max-width: 560px) { .readouts { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+.ro { border-left: 3px solid var(--line); padding: 2px 0 2px 10px; min-width: 0; }
+.ro .k { font-size: .76rem; color: var(--muted); letter-spacing: .04em; }
+.ro .v { font: 600 2.1rem/1.05 var(--display); font-variant-numeric: tabular-nums; }
+.ro .v small { font: 500 1rem var(--display); color: var(--muted); }
+.ro .t { font: 400 .78rem var(--mono); color: var(--muted); font-variant-numeric: tabular-nums; }
+.ro.main { border-left-color: var(--accent); }
+.status { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; font: 500 .8rem var(--mono); color: var(--muted); }
+.chip { border: 1px solid var(--line); border-radius: 999px; padding: 2px 9px; }
+.chip.ok { color: var(--ok); border-color: var(--ok); }
+.chip.warn { color: var(--warn); border-color: var(--warn); }
+.verdict { font-size: .92rem; margin: 0; }
+.figs { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.4fr); gap: 14px; }
+@media (max-width: 860px) { .figs { grid-template-columns: minmax(0, 1fr); } }
+figure { margin: 0; display: grid; gap: 6px; min-width: 0; }
+figcaption { font-size: .8rem; color: var(--muted); }
+canvas { width: 100%; max-width: 100%; display: block; border-radius: 6px; background: var(--bg); }
+.tablewrap { overflow-x: auto; }
+table { border-collapse: collapse; font: 400 .82rem var(--mono); font-variant-numeric: tabular-nums; width: 100%; }
+th, td { padding: 5px 8px; text-align: right; border-bottom: 1px solid var(--line); white-space: nowrap; }
+th:first-child, td:first-child { text-align: left; }
+th { color: var(--muted); font-weight: 500; }
+td.good { color: var(--ok); }
+td.bad { color: var(--warn); }
+@media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+</style>
+
+<div class="wrap">
+  <header>
+    <h1>스핀 역보정기</h1>
+    <p>폰 카메라가 본 비행 초반 몇 프레임만으로 스핀량과 스핀축을 거꾸로 찾고, 끝까지 날려 캐리를 냅니다. 격자 탐색(스핀 × 축 × 발사각 × 방위각)은 WebGPU, 마무리는 레벤버그–마쿼트. 장은 공유 포화 장 + 항력 위기.</p>
+  </header>
+
+  <div class="grid">
+    <section class="panel" aria-label="입력">
+      <h2>샷 (시험용 참값)</h2>
+      <label for="preset">클럽
+        <select id="preset">
+          <option value="dr">드라이버 · 167 mph 10.9° 2686 rpm</option>
+          <option value="i7">7번 · 120 mph 16.3° 7097 rpm</option>
+          <option value="a7">아마추어 7번 · 100 mph 18° 6000 rpm</option>
+          <option value="pw">웨지 · 86 mph 25.7° 8403 rpm</option>
+        </select>
+      </label>
+      <div class="row">
+        <label for="mph">볼스피드 mph<input id="mph" type="number" step="0.1" value="167"></label>
+        <label for="deg">발사각 °<input id="deg" type="number" step="0.1" value="10.9"></label>
+      </div>
+      <div class="row">
+        <label for="rpm">스핀 rpm<input id="rpm" type="number" step="10" value="2686"></label>
+        <label for="axis">스핀축 °<input id="axis" type="number" step="0.5" value="8"></label>
+      </div>
+
+      <h2>카메라</h2>
+      <div class="row">
+        <label for="cam">위치
+          <select id="cam"><option value="behind">공 뒤</option><option value="side">옆</option></select>
+        </label>
+        <label for="fps">fps
+          <select id="fps"><option>120</option><option selected>240</option><option>480</option><option>960</option></select>
+        </label>
+      </div>
+      <label for="win">관측 시간 <span class="val" id="winv"></span>
+        <input id="win" type="range" min="0.02" max="0.40" step="0.01" value="0.20">
+      </label>
+      <label for="sig">위치 노이즈 σ <span class="val" id="sigv"></span>
+        <input id="sig" type="range" min="1" max="20" step="1" value="5">
+      </label>
+      <p class="note">카메라 한 대라 깊이 축(공 뒤: 앞뒤, 옆: 좌우)은 노이즈를 5배로 둡니다. 실내 매트·네트는 대략 3 m, 0.03–0.05 s 입니다.</p>
+      <div class="btns">
+        <button class="primary" id="go">촬영 흉내 + 역보정</button>
+        <button class="ghost" id="again">노이즈만 다시</button>
+      </div>
+
+      <h2>실제 프레임 넣기</h2>
+      <label for="paste"><span>한 줄에 t x y z (초, 미터). x 앞, y 위, z 오른쪽</span>
+        <textarea id="paste" placeholder="0.0000 0.000 0.020 0.000&#10;0.0042 0.310 0.081 0.010&#10;…"></textarea>
+      </label>
+      <div class="btns"><button class="ghost" id="solvePaste">붙여넣은 프레임 역보정</button></div>
+    </section>
+
+    <section class="panel" aria-label="결과">
+      <div class="status" id="status"><span class="chip" id="gpuChip">GPU 확인 중</span><span id="timing"></span></div>
+      <div class="readouts">
+        <div class="ro main"><div class="k">스핀</div><div class="v" id="oSpin">–</div><div class="t" id="tSpin"></div></div>
+        <div class="ro"><div class="k">스핀축</div><div class="v" id="oAxis">–</div><div class="t" id="tAxis"></div></div>
+        <div class="ro main"><div class="k">캐리</div><div class="v" id="oCarry">–</div><div class="t" id="tCarry"></div></div>
+        <div class="ro"><div class="k">볼스피드 · 발사각</div><div class="v" id="oLaunch">–</div><div class="t" id="tLaunch"></div></div>
+      </div>
+      <p class="verdict" id="verdict"></p>
+      <div class="figs">
+        <figure>
+          <canvas id="heat" width="520" height="380" aria-label="스핀과 축에 따른 맞춤 오차 지형"></canvas>
+          <figcaption>맞춤 오차 지형 (스핀 × 축, 나머지는 최소). 어두울수록 잘 맞음. ○ 참값, ✕ 추정값. 골이 길게 늘어지면 그 방향은 관측으로 정해지지 않는다는 뜻.</figcaption>
+        </figure>
+        <figure>
+          <canvas id="traj" width="760" height="380" aria-label="비행 궤적 옆모습과 위모습"></canvas>
+          <figcaption>위: 옆에서 본 궤적, 아래: 위에서 본 궤적. 주황 띠는 추정의 불확실도(사후분포 40개 표본), 초록 점은 관측 프레임, 회색 선은 참 궤적.</figcaption>
+        </figure>
+      </div>
+      <h2>얼마나 봐야 하나 (러스트 몬테카를로 60회, 공 뒤 카메라, 240 fps, σ 5 mm)</h2>
+      <div class="tablewrap">
+        <table>
+          <thead><tr><th>샷</th><th>0.05 s</th><th>0.1 s</th><th>0.2 s</th><th>0.3 s</th><th>스핀 모름</th></tr></thead>
+          <tbody>
+            <tr><td>드라이버 캐리 오차 yd</td><td class="bad">9.72</td><td class="bad">5.34</td><td class="good">0.75</td><td class="good">0.32</td><td>7.1</td></tr>
+            <tr><td>드라이버 스핀 오차 rpm</td><td class="bad">1247</td><td>746</td><td class="good">136</td><td class="good">49</td><td>–</td></tr>
+            <tr><td>7번 캐리 오차 yd</td><td>3.36</td><td>2.35</td><td class="good">0.99</td><td class="good">0.43</td><td>3.0</td></tr>
+            <tr><td>아마추어 7번 캐리 오차 yd</td><td>2.17</td><td>1.15</td><td class="good">0.52</td><td class="good">0.25</td><td>0.1</td></tr>
+            <tr><td>비행 거리 (드라이버)</td><td>3.7 m</td><td>7.3 m</td><td>14.5 m</td><td>21.4 m</td><td></td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p class="note">'스핀 모름'은 투어 회귀(rpm ≈ 2233 + 304·발사각 − 9.9·볼스피드)로 찍었을 때입니다. 아이언 캐리는 스핀에 둔해서 짧은 관측으로도 2–3 yd 안쪽이고, 드라이버는 비행 10–15 m 를 봐야 1 yd 안쪽이 됩니다.</p>
+    </section>
+  </div>
+</div>
+
+<script id="engine">
+// ---- 장과 적분기 (러스트 flightbench SharedRe·spininv 와 같은 식) ----
+const U = 22.916037151920374, GRAV = 9.81, L = U * U / GRAV, TU = U / GRAV, R = 0.021335;
+const RE_PER_U = U * 0.04267 * 1.2 / 1.81e-5;
+const FIELD = { v: 0.1330, e: 0.3247, r0: 62859.6581, d: 1.3688, c: 2.7901, l: 5.9226, beta: 0.06 };
+const INV_U0SQ = (RE_PER_U / FIELD.r0) ** 2;
+const PRIOR_SD = 1500, AXIS_SD = 20;
+function priorRpm(mph, deg) { return Math.min(11000, Math.max(1500, 2233.36 + 303.69 * deg - 9.909 * mph)); }
+function kk(sp, w) {
+  const r = w * sp / (sp + FIELD.l * w);
+  const x = sp * sp * INV_U0SQ;
+  return [(FIELD.v + FIELD.e / (1 + x * x)) * sp + FIELD.d * r, FIELD.c * r];
+}
+function omegaHat(ph, a) { const n = [-Math.sin(ph), 0, Math.cos(ph)]; return [Math.cos(a) * n[0], Math.sin(a), Math.cos(a) * n[2]]; }
+function deriv(s, om, out) {
+  const sp = Math.hypot(s[3], s[4], s[5]);
+  const [kd, kl] = kk(sp, s[6]);
+  const cx = om[1] * s[5] - om[2] * s[4], cy = om[2] * s[3] - om[0] * s[5], cz = om[0] * s[4] - om[1] * s[3];
+  out[0] = s[3]; out[1] = s[4]; out[2] = s[5];
+  out[3] = -kd * s[3] + kl * cx; out[4] = -kd * s[4] + kl * cy - 1; out[5] = -kd * s[5] + kl * cz;
+  out[6] = -FIELD.beta * s[6] * sp;
+}
+const K1 = new Float64Array(7), K2 = new Float64Array(7), K3 = new Float64Array(7), K4 = new Float64Array(7), TMP = new Float64Array(7);
+function rk4(s, om, h) {
+  deriv(s, om, K1);
+  for (let i = 0; i < 7; i++) TMP[i] = s[i] + 0.5 * h * K1[i];
+  deriv(TMP, om, K2);
+  for (let i = 0; i < 7; i++) TMP[i] = s[i] + 0.5 * h * K2[i];
+  deriv(TMP, om, K3);
+  for (let i = 0; i < 7; i++) TMP[i] = s[i] + h * K3[i];
+  deriv(TMP, om, K4);
+  for (let i = 0; i < 7; i++) s[i] += h / 6 * (K1[i] + 2 * K2[i] + 2 * K3[i] + K4[i]);
+}
+// p = [x0 y0 z0 (m), 속도 m/s, 발사각 rad, 방위각 rad, rpm, 축 rad]
+function initState(p) {
+  const v = p[3] / U, th = p[4], ph = p[5];
+  return { s: new Float64Array([p[0] / L, p[1] / L, p[2] / L, v * Math.cos(th) * Math.cos(ph), v * Math.sin(th), v * Math.cos(th) * Math.sin(ph), R * p[6] * 2 * Math.PI / 60 / U]), om: omegaHat(ph, p[7]) };
+}
+function sample(p, n, fdt, sub = 4) {
+  const { s, om } = initState(p);
+  const h = fdt / TU / sub, out = new Float64Array(n * 3);
+  for (let k = 0; k < n; k++) {
+    if (k > 0) for (let j = 0; j < sub; j++) rk4(s, om, h);
+    out[3 * k] = s[0] * L; out[3 * k + 1] = s[1] * L; out[3 * k + 2] = s[2] * L;
+  }
+  return out;
+}
+/** 끝까지 비행 (땅 y=0 에서 출발, 러스트 carry() 와 같음). 반환 {carry yd, pts:[[x,y,z] m...]} */
+function flyFull(p, keep = false) {
+  const q = p.slice(); q[0] = 0; q[1] = 0; q[2] = 0;
+  const { s, om } = initState(q);
+  const h = 0.004, pts = [];
+  const prev = new Float64Array(7), dprev = new Float64Array(7), dnow = new Float64Array(7);
+  for (let k = 0; k < 4000; k++) {
+    prev.set(s); deriv(prev, om, dprev);
+    rk4(s, om, h);
+    if (keep && k % 5 === 0) pts.push([s[0] * L, s[1] * L, s[2] * L]);
+    if (k > 0 && s[1] < 0) {
+      deriv(s, om, dnow);
+      const y0 = prev[1], y1 = s[1], m0 = dprev[1] * h, m1 = dnow[1] * h;
+      let t = y0 / (y0 - y1);
+      for (let it = 0; it < 4; it++) {
+        const t2 = t * t, t3 = t2 * t;
+        const f = (2 * t3 - 3 * t2 + 1) * y0 + (t3 - 2 * t2 + t) * m0 + (-2 * t3 + 3 * t2) * y1 + (t3 - t2) * m1;
+        const df = (6 * t2 - 6 * t) * (y0 - y1) + (3 * t2 - 4 * t + 1) * m0 + (3 * t2 - 2 * t) * m1;
+        t = Math.min(1, Math.max(0, t - f / df));
+      }
+      const t2 = t * t, t3 = t2 * t, H = [2 * t3 - 3 * t2 + 1, t3 - 2 * t2 + t, -2 * t3 + 3 * t2, t3 - t2];
+      const x = H[0] * prev[0] + H[1] * dprev[0] * h + H[2] * s[0] + H[3] * dnow[0] * h;
+      const z = H[0] * prev[2] + H[1] * dprev[2] * h + H[2] * s[2] + H[3] * dnow[2] * h;
+      if (keep) pts.push([x * L, 0, z * L]);
+      // 캐리 = 처음 수평 방향으로의 거리 (러스트와 같음: 방위 0 기준 x)
+      const ph = q[5];
+      return { carry: (x * Math.cos(ph) + z * Math.sin(ph)) * L / 0.9144, pts };
+    }
+  }
+  return { carry: NaN, pts };
+}
+function solveLin(A) {
+  const n = A.length;
+  for (let c = 0; c < n; c++) {
+    let p = c; for (let i = c + 1; i < n; i++) if (Math.abs(A[i][c]) > Math.abs(A[p][c])) p = i;
+    [A[c], A[p]] = [A[p], A[c]];
+    for (let r = 0; r < n; r++) if (r !== c) { const f = A[r][c] / A[c][c]; for (let k = c; k <= n; k++) A[r][k] -= f * A[c][k]; }
+  }
+  return A.map((row, i) => row[n] / row[i]);
+}
+function resid(p, obs, sig, fdt, prior) {
+  const n = obs.length / 3, m = sample(p, n, fdt), r = new Float64Array(n * 3 + 2);
+  for (let i = 0; i < n * 3; i++) r[i] = (m[i] - obs[i]) / sig[i % 3];
+  r[n * 3] = (p[6] - prior) / PRIOR_SD; r[n * 3 + 1] = p[7] * 180 / Math.PI / AXIS_SD;
+  return r;
+}
+const STEP = [1e-4, 1e-4, 1e-4, 1e-3, 1e-5, 1e-5, 1, 1e-4];
+const LO = [-1, -1, -1, 5, -0.2, -1, 0, -1.2], HI = [1, 1, 1, 100, 1.2, 1, 15000, 1.2];
+function lm(p0, obs, sig, fdt, prior) {
+  const cost = r => r.reduce((a, x) => a + x * x, 0);
+  let p = p0.slice(), r = resid(p, obs, sig, fdt, prior), mu = 1e-3, JtJ = null;
+  for (let it = 0; it < 60; it++) {
+    const J = [];
+    for (let k = 0; k < 8; k++) { const q = p.slice(); q[k] += STEP[k]; const rq = resid(q, obs, sig, fdt, prior); J.push(rq.map((x, i) => (x - r[i]) / STEP[k])); }
+    JtJ = Array.from({ length: 8 }, (_, a) => Array.from({ length: 8 }, (_, b) => { let s = 0; for (let i = 0; i < r.length; i++) s += J[a][i] * J[b][i]; return s; }));
+    const Jtr = Array.from({ length: 8 }, (_, a) => { let s = 0; for (let i = 0; i < r.length; i++) s += J[a][i] * r[i]; return s; });
+    let improved = false;
+    for (let t = 0; t < 12; t++) {
+      const A = JtJ.map((row, a) => { const rr = row.slice(); rr[a] = rr[a] * (1 + mu) + 1e-12; rr.push(-Jtr[a]); return rr; });
+      const dp = solveLin(A);
+      const q = p.map((x, k) => Math.min(HI[k], Math.max(LO[k], x + dp[k])));
+      const rq = resid(q, obs, sig, fdt, prior);
+      if (cost(rq) < cost(r)) { const rel = (cost(r) - cost(rq)) / Math.max(cost(r), 1e-30); p = q; r = rq; mu = Math.max(mu * 0.3, 1e-10); improved = true; if (rel < 1e-10) it = 999; break; }
+      mu *= 10;
+    }
+    if (!improved) break;
+  }
+  // 사후 공분산 (J^T J)^-1
+  const cov = Array.from({ length: 8 }, (_, k) => { const A = JtJ.map((row, a) => { const rr = row.slice(); rr[a] += 1e-12; rr.push(a === k ? 1 : 0); return rr; }); return solveLin(A); });
+  return { p, chi2: cost(r), cov };
+}
+/** 앞 몇 프레임의 2차 맞춤으로 시작점 */
+function initialGuess(obs, fdt, rpm0) {
+  const n = Math.min(8, obs.length / 3), co = [];
+  for (let c = 0; c < 3; c++) {
+    const A = [[0, 0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0]];
+    for (let k = 0; k < n; k++) { const t = k * fdt, b = [1, t, t * t]; for (let i = 0; i < 3; i++) { for (let j = 0; j < 3; j++) A[i][j] += b[i] * b[j]; A[i][3] += b[i] * obs[3 * k + c]; } }
+    co.push(solveLin(A));
+  }
+  const vx = co[0][1], vy = co[1][1], vz = co[2][1], v = Math.hypot(vx, vy, vz);
+  return [co[0][0], co[1][0], co[2][0], v, Math.asin(vy / v), Math.atan2(vz, vx), rpm0, 0];
+}
+function rng(seed) { let s = BigInt.asUintN(64, BigInt(seed) * 0x9E3779B97F4A7C15n + 1n); return () => { s ^= s << 13n; s = BigInt.asUintN(64, s); s ^= s >> 7n; s ^= s << 17n; s = BigInt.asUintN(64, s); return Number(s >> 11n) / 2 ** 53; }; }
+function gauss(u) { const a = Math.max(u(), 1e-300), b = u(); return Math.sqrt(-2 * Math.log(a)) * Math.cos(2 * Math.PI * b); }
+if (typeof module !== "undefined") module.exports = { sample, flyFull, lm, initialGuess, priorRpm, resid, rng, gauss, kk, L, TU, U, RE_PER_U, FIELD, INV_U0SQ, PRIOR_SD, AXIS_SD };
+</script>
+
+<script id="gpu">
+// ---- WebGPU 격자 탐색: (스핀 × 축 × 속도 보정 × 발사각 보정) 후보마다 관측 구간을 적분해 가중 제곱오차 ----
+const WGSL = /* wgsl */`
+@group(0) @binding(0) var<uniform> P: array<vec4<f32>, 8>;
+@group(0) @binding(1) var<storage, read> obs: array<vec4<f32>>;
+@group(0) @binding(2) var<storage, read_write> outv: array<f32>;
+
+fn kk(sp: f32, w: f32) -> vec2<f32> {
+  let fl = P[5]; let fl2 = P[6];          // fl = (v, e, inv_u0sq, d), fl2 = (c, l, beta, 0)
+  let r = w * sp / (sp + fl2.y * w);
+  let x = sp * sp * fl.z;
+  return vec2<f32>((fl.x + fl.y / (1.0 + x * x)) * sp + fl.w * r, fl2.x * r);
+}
+fn der(p: vec3<f32>, u: vec3<f32>, w: f32, om: vec3<f32>) -> array<vec3<f32>, 2> {
+  let sp = length(u);
+  let k = kk(sp, w);
+  let a = -k.x * u + k.y * cross(om, u) - vec3<f32>(0.0, 1.0, 0.0);
+  return array<vec3<f32>, 2>(u, a);
+}
+
+@compute @workgroup_size(64)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+  let dims = P[0];                       // (nr, na, nv, nt)
+  let nr = u32(dims.x); let na = u32(dims.y); let nv = u32(dims.z); let nt = u32(dims.w);
+  let total = nr * na * nv * nt;
+  let id = gid.x + gid.y * 65535u * 64u;
+  if (id >= total) { return; }
+  let it = id % nt; let iv = (id / nt) % nv; let ia = (id / (nt * nv)) % na; let ir = id / (nt * nv * na);
+  let base = P[1];                       // (x0, y0, z0, v)  무차원
+  let ang = P[2];                        // (th, ph, n_frames, h)
+  let grid = P[3];                       // (rpm0, rpm1, a0, a1)
+  let g2 = P[4];                         // (dph, dth, wscale, sub)
+  let sg = P[7];                         // (1/sx, 1/sy, 1/sz, prior_rpm)
+  let fr = func_fr(ir, nr);
+  let rpm = mix(grid.x, grid.y, fr);
+  let axis = mix(grid.z, grid.w, func_fr(ia, na));
+  let v = base.w;
+  let th = ang.x + g2.y * (2.0 * func_fr(it, nt) - 1.0);
+  let ph = ang.y + g2.x * (2.0 * func_fr(iv, nv) - 1.0);
+  let nrm = vec3<f32>(-sin(ph), 0.0, cos(ph));
+  let om = vec3<f32>(cos(axis) * nrm.x, sin(axis), cos(axis) * nrm.z);
+  var p = base.xyz;
+  var u = v * vec3<f32>(cos(th) * cos(ph), sin(th), cos(th) * sin(ph));
+  var w = rpm * g2.z;
+  let n = u32(ang.z); let h = ang.w; let sub = u32(g2.w);
+  var sse = 0.0;
+  let d0 = (p - obs[0].xyz) * sg.xyz;
+  sse += dot(d0, d0);
+  for (var k = 1u; k < n; k++) {
+    for (var j = 0u; j < sub; j++) {
+      let sp0 = length(u);
+      let a1 = der(p, u, w, om); let w1 = -P[6].z * w * sp0;
+      let a2 = der(p + 0.5 * h * a1[0], u + 0.5 * h * a1[1], w + 0.5 * h * w1, om); let w2 = -P[6].z * (w + 0.5 * h * w1) * length(u + 0.5 * h * a1[1]);
+      let a3 = der(p + 0.5 * h * a2[0], u + 0.5 * h * a2[1], w + 0.5 * h * w2, om); let w3 = -P[6].z * (w + 0.5 * h * w2) * length(u + 0.5 * h * a2[1]);
+      let a4 = der(p + h * a3[0], u + h * a3[1], w + h * w3, om); let w4 = -P[6].z * (w + h * w3) * length(u + h * a3[1]);
+      p = p + h / 6.0 * (a1[0] + 2.0 * a2[0] + 2.0 * a3[0] + a4[0]);
+      u = u + h / 6.0 * (a1[1] + 2.0 * a2[1] + 2.0 * a3[1] + a4[1]);
+      w = w + h / 6.0 * (w1 + 2.0 * w2 + 2.0 * w3 + w4);
+    }
+    let d = (p - obs[k].xyz) * sg.xyz;
+    sse += dot(d, d);
+  }
+  let pr = (rpm - sg.w) / ${PRIOR_SD.toFixed(1)};
+  let pa = degrees(axis) / ${AXIS_SD.toFixed(1)};
+  outv[id] = sse + pr * pr + pa * pa;
+}
+fn func_fr(i: u32, n: u32) -> f32 { if (n <= 1u) { return 0.5; } return f32(i) / f32(n - 1u); }
+`;
+
+let gpu = null;
+async function initGPU() {
+  try {
+    if (!navigator.gpu) return null;
+    const adapter = await navigator.gpu.requestAdapter();
+    if (!adapter) return null;
+    const device = await adapter.requestDevice();
+    const module = device.createShaderModule({ code: WGSL });
+    const info = await module.getCompilationInfo?.();
+    if (info && info.messages.some(m => m.type === "error")) { console.error(info.messages); return null; }
+    const pipeline = device.createComputePipeline({ layout: "auto", compute: { module, entryPoint: "main" } });
+    return { device, pipeline };
+  } catch (e) { console.warn(e); return null; }
+}
+
+/** 격자: 반환 Float32Array SSE (ir, ia, iv, it 순) */
+async function gridGPU(spec) {
+  const { device, pipeline } = gpu;
+  const total = spec.nr * spec.na * spec.nv * spec.nt;
+  const P = new Float32Array(32);
+  P.set([spec.nr, spec.na, spec.nv, spec.nt], 0);
+  P.set([spec.base[0] / L, spec.base[1] / L, spec.base[2] / L, spec.base[3] / U], 4);
+  P.set([spec.base[4], spec.base[5], spec.n, spec.fdt / TU / spec.sub], 8);
+  P.set([spec.rpm0, spec.rpm1, spec.a0, spec.a1], 12);
+  P.set([spec.dph, spec.dth, R * 2 * Math.PI / 60 / U, spec.sub], 16);
+  P.set([FIELD.v, FIELD.e, INV_U0SQ, FIELD.d], 20);
+  P.set([FIELD.c, FIELD.l, FIELD.beta, 0], 24);
+  P.set([L / spec.sig[0], L / spec.sig[1], L / spec.sig[2], spec.prior], 28);
+  const ub = device.createBuffer({ size: P.byteLength, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+  device.queue.writeBuffer(ub, 0, P);
+  const ob = new Float32Array(spec.n * 4);
+  for (let k = 0; k < spec.n; k++) { ob[4 * k] = spec.obs[3 * k] / L; ob[4 * k + 1] = spec.obs[3 * k + 1] / L; ob[4 * k + 2] = spec.obs[3 * k + 2] / L; }
+  const sb = device.createBuffer({ size: ob.byteLength, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
+  device.queue.writeBuffer(sb, 0, ob);
+  const outb = device.createBuffer({ size: total * 4, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC });
+  const rb = device.createBuffer({ size: total * 4, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST });
+  const bg = device.createBindGroup({ layout: pipeline.getBindGroupLayout(0), entries: [{ binding: 0, resource: { buffer: ub } }, { binding: 1, resource: { buffer: sb } }, { binding: 2, resource: { buffer: outb } }] });
+  const enc = device.createCommandEncoder();
+  const pass = enc.beginComputePass();
+  pass.setPipeline(pipeline); pass.setBindGroup(0, bg);
+  const groups = Math.ceil(total / 64);
+  pass.dispatchWorkgroups(Math.min(groups, 65535), Math.ceil(groups / 65535));
+  pass.end();
+  enc.copyBufferToBuffer(outb, 0, rb, 0, total * 4);
+  device.queue.submit([enc.finish()]);
+  await rb.mapAsync(GPUMapMode.READ);
+  const res = new Float32Array(rb.getMappedRange().slice(0));
+  rb.unmap();
+  [ub, sb, outb, rb].forEach(b => b.destroy());
+  return res;
+}
+
+/** CPU 대체: 같은 격자를 JS 로 (작게) */
+function gridCPU(spec) {
+  const total = spec.nr * spec.na * spec.nv * spec.nt, out = new Float32Array(total);
+  const fr = (i, n) => n <= 1 ? 0.5 : i / (n - 1);
+  for (let id = 0; id < total; id++) {
+    const it = id % spec.nt, iv = Math.floor(id / spec.nt) % spec.nv, ia = Math.floor(id / (spec.nt * spec.nv)) % spec.na, ir = Math.floor(id / (spec.nt * spec.nv * spec.na));
+    const p = spec.base.slice();
+    p[5] += spec.dph * (2 * fr(iv, spec.nv) - 1); p[4] += spec.dth * (2 * fr(it, spec.nt) - 1);
+    p[6] = spec.rpm0 + (spec.rpm1 - spec.rpm0) * fr(ir, spec.nr); p[7] = spec.a0 + (spec.a1 - spec.a0) * fr(ia, spec.na);
+    const r = resid(p, spec.obs, spec.sig, spec.fdt, spec.prior);
+    let s = 0; for (const x of r) s += x * x; out[id] = s;
+  }
+  return out;
+}
+</script>
+
+<script id="ui">
+const $ = id => document.getElementById(id);
+const PRESETS = { dr: [167, 10.9, 2686, 8], i7: [120, 16.3, 7097, 8], a7: [100, 18, 6000, 8], pw: [86, 25.7, 8403, 8] };
+let seed = 1, last = null;
+const css = n => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+
+function readInputs() {
+  return { mph: +$("mph").value, deg: +$("deg").value, rpm: +$("rpm").value, axis: +$("axis").value, cam: $("cam").value, fps: +$("fps").value, win: +$("win").value, sig: +$("sig").value / 1000 };
+}
+function syncLabels() {
+  const x = readInputs();
+  const dist = x.mph * 0.44704 * x.win * Math.cos(x.deg * Math.PI / 180) * 0.97;
+  $("winv").textContent = `${x.win.toFixed(2)} s · 약 ${dist.toFixed(1)} m · ${Math.round(x.win * x.fps) + 1}프레임`;
+  $("sigv").textContent = `${(x.sig * 1000).toFixed(0)} mm`;
+}
+
+async function solve(obs, fdt, sig, truth) {
+  const n = obs.length / 3;
+  const t0 = performance.now();
+  const g0 = initialGuess(obs, fdt, 0);
+  const prior = priorRpm(g0[3] / 0.44704, g0[4] * 180 / Math.PI);
+  const spec = { obs, n, fdt, sig, prior, base: g0, sub: 2, rpm0: 1000, rpm1: 11000, a0: -0.6, a1: 0.6, dph: 0.03, dth: 0.03 };
+  let grid, how;
+  if (gpu) { Object.assign(spec, { nr: 96, na: 48, nv: 12, nt: 12 }); grid = await gridGPU(spec); how = "WebGPU"; }
+  else { Object.assign(spec, { nr: 40, na: 20, nv: 5, nt: 5 }); grid = gridCPU(spec); how = "CPU"; }
+  const t1 = performance.now();
+  // 지형도: (ir, ia) 마다 나머지 최소
+  const heat = new Float32Array(spec.nr * spec.na); heat.fill(Infinity);
+  let best = Infinity, bi = 0;
+  for (let id = 0; id < grid.length; id++) {
+    const g = grid[id]; const cell = Math.floor(id / (spec.nv * spec.nt));
+    if (g < heat[cell]) heat[cell] = g;
+    if (g < best) { best = g; bi = id; }
+  }
+  const fr = (i, m) => m <= 1 ? 0.5 : i / (m - 1);
+  const it = bi % spec.nt, iv = Math.floor(bi / spec.nt) % spec.nv, ia = Math.floor(bi / (spec.nt * spec.nv)) % spec.na, ir = Math.floor(bi / (spec.nt * spec.nv * spec.na));
+  const start = g0.slice();
+  start[5] += spec.dph * (2 * fr(iv, spec.nv) - 1); start[4] += spec.dth * (2 * fr(it, spec.nt) - 1);
+  start[6] = spec.rpm0 + (spec.rpm1 - spec.rpm0) * fr(ir, spec.nr); start[7] = spec.a0 + (spec.a1 - spec.a0) * fr(ia, spec.na);
+  const fit = lm(start, obs, sig, fdt, prior);
+  const t2 = performance.now();
+  // 캐리와 그 불확실도: 수치 기울기 × 공분산
+  const c0 = flyFull(fit.p).carry, gc = [];
+  for (let k = 0; k < 8; k++) { const q = fit.p.slice(); const hstep = STEP[k] * 10; q[k] += hstep; gc.push((flyFull(q).carry - c0) / hstep); }
+  let varc = 0; for (let a = 0; a < 8; a++) for (let b = 0; b < 8; b++) varc += gc[a] * fit.cov[a][b] * gc[b];
+  // 사후 표본 (대각 근사 대신 촐레스키)
+  const draws = posteriorDraws(fit.p, fit.cov, 40);
+  const t3 = performance.now();
+  last = { obs, fdt, sig, truth, fit, carry: c0, sdc: Math.sqrt(Math.max(varc, 0)), heat, spec, draws, how, ms: [t1 - t0, t2 - t1, t3 - t2], cells: grid.length };
+  render();
+}
+
+function posteriorDraws(p, cov, n) {
+  const m = 8, Lc = Array.from({ length: m }, () => new Float64Array(m));
+  for (let i = 0; i < m; i++) for (let j = 0; j <= i; j++) {
+    let s = cov[i][j]; for (let k = 0; k < j; k++) s -= Lc[i][k] * Lc[j][k];
+    Lc[i][j] = i === j ? Math.sqrt(Math.max(s, 1e-30)) : s / Lc[j][j];
+  }
+  const u = rng(seed * 7 + 3), out = [];
+  for (let d = 0; d < n; d++) {
+    const z = Array.from({ length: m }, () => gauss(u)), q = p.slice();
+    for (let i = 0; i < m; i++) for (let k = 0; k <= i; k++) q[i] += Lc[i][k] * z[k];
+    out.push(flyFull(q, true).pts);
+  }
+  return out;
+}
+
+function simulateAndSolve() {
+  const x = readInputs();
+  const truth = [0, 0.02, 0, x.mph * 0.44704, x.deg * Math.PI / 180, 2 * Math.PI / 180, x.rpm, x.axis * Math.PI / 180];
+  const fdt = 1 / x.fps, n = Math.round(x.win * x.fps) + 1;
+  const clean = sample(truth, n, fdt);
+  const sig = x.cam === "behind" ? [5 * x.sig, x.sig, x.sig] : [x.sig, x.sig, 5 * x.sig];
+  const u = rng(seed), obs = new Float64Array(n * 3);
+  for (let i = 0; i < n * 3; i++) obs[i] = clean[i] + sig[i % 3] * gauss(u);
+  solve(obs, fdt, sig, truth);
+}
+
+function solvePasted() {
+  const rows = $("paste").value.trim().split(/\n+/).map(l => l.trim().split(/[\s,]+/).map(Number)).filter(r => r.length >= 4 && r.every(Number.isFinite));
+  if (rows.length < 5) { $("verdict").textContent = "프레임이 5줄 이상 필요합니다. 한 줄에 t x y z (초, 미터)를 넣어 주세요."; return; }
+  const dts = rows.slice(1).map((r, i) => r[0] - rows[i][0]).sort((a, b) => a - b);
+  const fdt = dts[Math.floor(dts.length / 2)];
+  const obs = new Float64Array(rows.length * 3);
+  rows.forEach((r, k) => { obs[3 * k] = r[1]; obs[3 * k + 1] = r[2]; obs[3 * k + 2] = r[3]; });
+  const s = +$("sig").value / 1000, sig = $("cam").value === "behind" ? [5 * s, s, s] : [s, s, 5 * s];
+  solve(obs, fdt, sig, null);
+}
+
+function render() {
+  const r = last, p = r.fit.p, sd = k => Math.sqrt(Math.max(r.fit.cov[k][k], 0));
+  const tr = r.truth;
+  $("oSpin").innerHTML = `${Math.round(p[6])}<small> rpm</small>`;
+  $("tSpin").textContent = `±${Math.round(sd(6))}` + (tr ? ` · 참 ${tr[6]} (${p[6] - tr[6] >= 0 ? "+" : ""}${Math.round(p[6] - tr[6])})` : "");
+  $("oAxis").innerHTML = `${(p[7] * 180 / Math.PI).toFixed(1)}<small>°</small>`;
+  $("tAxis").textContent = `±${(sd(7) * 180 / Math.PI).toFixed(1)}°` + (tr ? ` · 참 ${(tr[7] * 180 / Math.PI).toFixed(1)}°` : "");
+  const ct = tr ? flyFull(tr).carry : null;
+  $("oCarry").innerHTML = `${r.carry.toFixed(1)}<small> yd</small>`;
+  $("tCarry").textContent = `±${r.sdc.toFixed(1)}` + (tr ? ` · 참 ${ct.toFixed(1)} (${r.carry - ct >= 0 ? "+" : ""}${(r.carry - ct).toFixed(1)})` : "");
+  $("oLaunch").innerHTML = `${(p[3] / 0.44704).toFixed(1)}<small> mph</small> ${(p[4] * 180 / Math.PI).toFixed(1)}<small>°</small>`;
+  $("tLaunch").textContent = tr ? `참 ${(tr[3] / 0.44704).toFixed(1)} mph ${(tr[4] * 180 / Math.PI).toFixed(1)}°` : `${r.obs.length / 3}프레임, ${(1 / r.fdt).toFixed(0)} fps`;
+  const chip = $("gpuChip");
+  chip.textContent = r.how === "WebGPU" ? "WebGPU" : "CPU (WebGPU 없음)";
+  chip.className = "chip " + (r.how === "WebGPU" ? "ok" : "warn");
+  $("timing").textContent = `격자 ${r.cells.toLocaleString()}개 ${r.ms[0].toFixed(0)} ms · LM ${r.ms[1].toFixed(0)} ms · 표본 ${r.ms[2].toFixed(0)} ms`;
+  const spinOK = sd(6) < 400;
+  $("verdict").textContent = spinOK
+    ? `관측 구간 안에서 스핀이 보입니다 (±${Math.round(sd(6))} rpm). 캐리 불확실도 ±${r.sdc.toFixed(1)} yd.`
+    : `이 관측으로는 스핀이 거의 안 보여 사전분포(투어 회귀 ±1500 rpm)에 기댑니다. 더 길게 보거나(비행 10 m 이상) 노이즈를 줄이면 좁혀집니다. 캐리 불확실도 ±${r.sdc.toFixed(1)} yd.`;
+  drawHeat(); drawTraj();
+}
+
+function fitCanvas(cv) {
+  const dpr = Math.min(window.devicePixelRatio || 1, 2), w = cv.clientWidth || cv.width, h = Math.round(w * cv.height / cv.width);
+  if (cv._w !== w) { cv.width = Math.round(w * dpr); cv.height = Math.round(h * dpr); cv._w = w; cv._h = h; }
+  const ctx = cv.getContext("2d"); ctx.setTransform(dpr, 0, 0, dpr, 0, 0); return [ctx, cv._w, cv._h];
+}
+
+function drawHeat() {
+  const r = last, s = r.spec, cv = $("heat");
+  cv.width = 520; cv.height = 380; cv._w = 0;
+  const [ctx, W, H] = fitCanvas(cv);
+  const pad = { l: 46, r: 10, t: 10, b: 34 }, pw = W - pad.l - pad.r, ph = H - pad.t - pad.b;
+  ctx.fillStyle = css("--bg"); ctx.fillRect(0, 0, W, H);
+  let mn = Infinity; for (const v of r.heat) mn = Math.min(mn, v);
+  const dark = matchMedia("(prefers-color-scheme: dark)").matches && document.documentElement.dataset.theme !== "light" || document.documentElement.dataset.theme === "dark";
+  for (let ir = 0; ir < s.nr; ir++) for (let ia = 0; ia < s.na; ia++) {
+    const d = r.heat[ir * s.na + ia] - mn;            // Δχ²
+    const t = Math.min(1, Math.log10(1 + d) / 3.5);    // 0 = 최적
+    const L0 = dark ? 14 + 70 * t : 22 + 74 * t;
+    ctx.fillStyle = `hsl(${205 - 30 * t} ${dark ? 35 : 40}% ${L0}%)`;
+    const x = pad.l + ir / s.nr * pw, y = pad.t + (1 - (ia + 1) / s.na) * ph;
+    ctx.fillRect(x, y, pw / s.nr + 0.6, ph / s.na + 0.6);
+  }
+  ctx.fillStyle = css("--muted"); ctx.font = "11px " + css("--mono");
+  ctx.textAlign = "center";
+  for (const rv of [2000, 4000, 6000, 8000, 10000]) { const x = pad.l + (rv - s.rpm0) / (s.rpm1 - s.rpm0) * pw; ctx.fillText(rv / 1000 + "k", x, H - 18); }
+  ctx.fillText("스핀 rpm", pad.l + pw / 2, H - 4);
+  ctx.textAlign = "right";
+  for (const av of [-30, -15, 0, 15, 30]) { const y = pad.t + (1 - (av * Math.PI / 180 - s.a0) / (s.a1 - s.a0)) * ph; ctx.fillText(av + "°", pad.l - 6, y + 4); }
+  const mark = (rpm, a, kind) => {
+    const x = pad.l + (rpm - s.rpm0) / (s.rpm1 - s.rpm0) * pw, y = pad.t + (1 - (a - s.a0) / (s.a1 - s.a0)) * ph;
+    ctx.lineWidth = 2; ctx.strokeStyle = kind === "t" ? css("--ink") : css("--accent");
+    ctx.beginPath();
+    if (kind === "t") ctx.arc(x, y, 6, 0, 2 * Math.PI); else { ctx.moveTo(x - 6, y - 6); ctx.lineTo(x + 6, y + 6); ctx.moveTo(x + 6, y - 6); ctx.lineTo(x - 6, y + 6); }
+    ctx.stroke();
+  };
+  if (r.truth) mark(r.truth[6], r.truth[7], "t");
+  mark(r.fit.p[6], r.fit.p[7], "e");
+}
+
+function drawTraj() {
+  const r = last, cv = $("traj");
+  cv.width = 760; cv.height = 380; cv._w = 0;
+  const [ctx, W, H] = fitCanvas(cv);
+  ctx.fillStyle = css("--bg"); ctx.fillRect(0, 0, W, H);
+  const truthPts = r.truth ? flyFull(r.truth, true).pts : null;
+  const est = flyFull(r.fit.p, true).pts;
+  const all = [est, ...(truthPts ? [truthPts] : []), ...r.draws];
+  let xmax = 10, ymax = 5, zmax = 3;
+  for (const t of all) for (const q of t) { xmax = Math.max(xmax, q[0]); ymax = Math.max(ymax, q[1]); zmax = Math.max(zmax, Math.abs(q[2])); }
+  xmax *= 1.05; ymax *= 1.15; zmax *= 1.2;
+  const pad = 30, sideH = H * 0.58, topY0 = sideH + 14, topH = H - topY0 - 18;
+  const sx = x => pad + x / xmax * (W - 2 * pad);
+  const sy = y => sideH - 8 - y / ymax * (sideH - 24);
+  const tz = z => topY0 + topH / 2 + z / zmax * topH / 2;
+  ctx.strokeStyle = css("--line"); ctx.lineWidth = 1;
+  ctx.beginPath(); ctx.moveTo(pad, sy(0)); ctx.lineTo(W - pad, sy(0)); ctx.moveTo(pad, tz(0)); ctx.lineTo(W - pad, tz(0)); ctx.stroke();
+  ctx.fillStyle = css("--muted"); ctx.font = "11px " + css("--mono"); ctx.textAlign = "center";
+  const yd = 0.9144, step = xmax / yd > 200 ? 50 : 25;
+  for (let d = 0; d * yd <= xmax; d += step) { ctx.fillText(d + " yd", sx(d * yd), sideH + 6); }
+  ctx.textAlign = "left"; ctx.fillText(`높이 최대 ${(ymax / 1.15 / yd).toFixed(0)} yd`, pad, 14); ctx.fillText("위에서 (좌우 과장)", pad, topY0 + 10);
+  const line = (pts, fx, fy, color, w, alpha = 1) => { ctx.globalAlpha = alpha; ctx.strokeStyle = color; ctx.lineWidth = w; ctx.beginPath(); pts.forEach((q, i) => i ? ctx.lineTo(fx(q), fy(q)) : ctx.moveTo(fx(q), fy(q))); ctx.stroke(); ctx.globalAlpha = 1; };
+  for (const d of r.draws) { line(d, q => sx(q[0]), q => sy(q[1]), css("--accent"), 1, 0.18); line(d, q => sx(q[0]), q => tz(q[2]), css("--accent"), 1, 0.18); }
+  if (truthPts) { line(truthPts, q => sx(q[0]), q => sy(q[1]), css("--muted"), 1.5); line(truthPts, q => sx(q[0]), q => tz(q[2]), css("--muted"), 1.5); }
+  line(est, q => sx(q[0]), q => sy(q[1]), css("--accent"), 2.2); line(est, q => sx(q[0]), q => tz(q[2]), css("--accent"), 2.2);
+  ctx.fillStyle = css("--turf");
+  for (let k = 0; k < r.obs.length / 3; k++) { ctx.beginPath(); ctx.arc(sx(r.obs[3 * k]), sy(r.obs[3 * k + 1]), 1.8, 0, 2 * Math.PI); ctx.fill(); }
+}
+
+$("preset").addEventListener("change", () => { const p = PRESETS[$("preset").value]; ["mph", "deg", "rpm", "axis"].forEach((k, i) => $(k).value = p[i]); syncLabels(); simulateAndSolve(); });
+["mph", "deg", "rpm", "axis", "cam", "fps", "win", "sig"].forEach(k => $(k).addEventListener("input", syncLabels));
+$("go").addEventListener("click", simulateAndSolve);
+$("again").addEventListener("click", () => { seed++; simulateAndSolve(); });
+$("solvePaste").addEventListener("click", solvePasted);
+let rz; window.addEventListener("resize", () => { clearTimeout(rz); rz = setTimeout(() => last && render(), 150); });
+
+(async () => {
+  syncLabels();
+  gpu = await initGPU();
+  $("gpuChip").textContent = gpu ? "WebGPU" : "CPU (WebGPU 없음)";
+  $("gpuChip").className = "chip " + (gpu ? "ok" : "warn");
+  simulateAndSolve();
+})();
+</script>
