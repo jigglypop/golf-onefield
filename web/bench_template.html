@@ -1,0 +1,438 @@
+<title>장 하나 GPU 벤치</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;600&family=IBM+Plex+Sans+KR:wght@400;600;700&display=swap">
+<style>
+/* 레이아웃: 계측기 판독지 한 장. 위에서 아래로 장치 → 실행 → 판독 → 기준값 → 원리 */
+:root {
+  --bg: #f4f6f2;
+  --panel: #ffffff;
+  --fg: #17211b;
+  --muted: #5b675f;
+  --line: #d6ddd4;
+  --accent: #1d6b4f;
+  --accent-ink: #ffffff;
+  --ok: #1d6b4f;
+  --warn: #9a6200;
+  --bad: #b3261e;
+  --font-body: "IBM Plex Sans KR", "Apple SD Gothic Neo", "Malgun Gothic", system-ui, sans-serif;
+  --font-data: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #111713; --panel: #18201b; --fg: #e3ebe5; --muted: #95a39a; --line: #2b3830;
+    --accent: #5cc496; --accent-ink: #0d1510; --ok: #5cc496; --warn: #e2a93b; --bad: #ff8a80;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #111713; --panel: #18201b; --fg: #e3ebe5; --muted: #95a39a; --line: #2b3830;
+  --accent: #5cc496; --accent-ink: #0d1510; --ok: #5cc496; --warn: #e2a93b; --bad: #ff8a80;
+  color-scheme: dark;
+}
+body { background: var(--bg); color: var(--fg); font-family: var(--font-body); font-size: 15px; line-height: 1.6; }
+.wrap { max-width: 880px; margin: 0 auto; padding-inline: 20px; padding-block: 28px 56px; display: grid; gap: 28px; }
+h1 { font-size: 1.6rem; line-height: 1.25; margin: 0; text-wrap: balance; font-weight: 700; }
+h2 { font-size: 1.05rem; margin: 0 0 10px; font-weight: 700; }
+p { margin: 0; max-width: 65ch; }
+.lead { color: var(--muted); margin-top: 6px; }
+.eyebrow { font-family: var(--font-data); font-size: 0.75rem; letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); }
+section { display: grid; gap: 10px; min-width: 0; }
+.panel { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 16px; display: grid; gap: 12px; min-width: 0; }
+.row { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; }
+.chip { font-family: var(--font-data); font-size: 0.8rem; padding: 2px 10px; border-radius: 999px; border: 1px solid currentColor; white-space: nowrap; }
+.chip.ok { color: var(--ok); } .chip.warn { color: var(--warn); } .chip.bad { color: var(--bad); } .chip.idle { color: var(--muted); }
+.device { font-family: var(--font-data); font-size: 0.85rem; color: var(--muted); overflow-wrap: anywhere; }
+label { font-size: 0.9rem; color: var(--muted); }
+select, button { font: inherit; font-size: 0.95rem; border-radius: 6px; }
+select { padding: 6px 10px; border: 1px solid var(--line); background: var(--panel); color: var(--fg); }
+button { padding: 8px 18px; border: 1px solid var(--accent); background: var(--accent); color: var(--accent-ink); font-weight: 600; cursor: pointer; }
+button:disabled { opacity: 0.55; cursor: progress; }
+button:focus-visible, select:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
+.status { font-family: var(--font-data); font-size: 0.85rem; color: var(--muted); min-height: 1.4em; }
+.scroll { overflow-x: auto; }
+table { border-collapse: collapse; width: 100%; font-size: 0.9rem; }
+th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+th { font-weight: 600; color: var(--muted); font-size: 0.8rem; }
+td.num { font-family: var(--font-data); font-variant-numeric: tabular-nums; text-align: right; }
+th.num { text-align: right; }
+tr.best td { font-weight: 600; }
+.summary { font-size: 1rem; }
+.summary strong { font-family: var(--font-data); color: var(--accent); }
+.formula { font-family: var(--font-data); font-size: 0.85rem; background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 10px 12px; overflow-x: auto; white-space: pre; }
+.note { font-size: 0.85rem; color: var(--muted); }
+@media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+</style>
+
+<div class="wrap">
+  <header>
+    <div class="eyebrow">golf-onefield · 브라우저 GPU 측정</div>
+    <h1>장 하나 GPU 벤치</h1>
+    <p class="lead">사이드 스핀까지 넣은 골프공 비행을 이 기기의 GPU와 CPU에서 두 방식으로 계산하고, 속도와 정확도를 같은 기준값으로 잽니다. 펼쳐 둔 장을 읽는 방식과, 궤적을 직접 적분하는 방식입니다.</p>
+  </header>
+
+  <section aria-labelledby="dev-h">
+    <h2 id="dev-h">장치</h2>
+    <div class="panel">
+      <div class="row"><span id="gpu-chip" class="chip idle">WebGPU 확인 중</span><span id="gpu-info" class="device"></span></div>
+      <div class="row">
+        <label for="n-shots">GPU 샷 수</label>
+        <select id="n-shots">
+          <option value="262144">262,144</option>
+          <option value="1048576" selected>1,048,576</option>
+          <option value="4000000">4,000,000</option>
+        </select>
+        <button id="run" type="button">측정 시작</button>
+      </div>
+      <div id="status" class="status" aria-live="polite">측정 전입니다. 버튼을 누르면 GPU, CPU 순서로 잽니다.</div>
+    </div>
+  </section>
+
+  <section aria-labelledby="res-h">
+    <h2 id="res-h">판독</h2>
+    <p id="summary" class="summary note">아직 측정하지 않았습니다. 아래 행은 측정 후 채워집니다.</p>
+    <div class="scroll">
+      <table id="results">
+        <thead><tr><th>방식</th><th>장치</th><th class="num">샷/초</th><th class="num">ns/샷</th><th class="num">최대 오차 비행 yd</th><th class="num">최대 오차 좌우 yd</th></tr></thead>
+        <tbody>
+          <tr data-k="gpu-read"><td>장 읽기 (모드 전개, 3차)</td><td>GPU</td><td class="num">—</td><td class="num">—</td><td class="num">—</td><td class="num">—</td></tr>
+          <tr data-k="gpu-direct"><td>직접 적분 (RK4, 49스텝)</td><td>GPU</td><td class="num">—</td><td class="num">—</td><td class="num">—</td><td class="num">—</td></tr>
+          <tr data-k="cpu-read"><td>장 읽기 (모드 전개, 3차)</td><td>CPU (JS 1스레드)</td><td class="num">—</td><td class="num">—</td><td class="num">—</td><td class="num">—</td></tr>
+          <tr data-k="cpu-direct"><td>직접 적분 (RK4, 49스텝)</td><td>CPU (JS 1스레드)</td><td class="num">—</td><td class="num">—</td><td class="num">—</td><td class="num">—</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p class="note">오차는 스핀축 ±40°, 발사각 5–40°를 섞은 기준 샷 1,024개를 아주 촘촘한 간격(dt′ = 0.0005)으로 적분한 값과 비교합니다. 1야드 = 무차원 거리 1/58.54.</p>
+  </section>
+
+  <section aria-labelledby="ref-h">
+    <h2 id="ref-h">서버 기준값</h2>
+    <div class="scroll">
+      <table>
+        <thead><tr><th>방식</th><th>장치</th><th class="num">샷/초</th><th class="num">ns/샷</th><th class="num">최대 오차 비행 yd</th><th class="num">최대 오차 좌우 yd</th></tr></thead>
+        <tbody>
+          <tr><td>장 읽기 (모드 전개, 3차)</td><td>Rust, Xeon 2.8 GHz 1코어</td><td class="num">9.8e6</td><td class="num">87</td><td class="num">0.014</td><td class="num">0.005</td></tr>
+          <tr><td>장 읽기 (모드 전개, 3차)</td><td>Rust, 2코어</td><td class="num">1.9e7</td><td class="num">53</td><td class="num">0.014</td><td class="num">0.005</td></tr>
+          <tr><td>직접 적분 (f64 × 8샷 묶음)</td><td>Rust, 1코어</td><td class="num">9.8e5</td><td class="num">1,025</td><td class="num">0.0004</td><td class="num">0.0004</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section aria-labelledby="how-h">
+    <h2 id="how-h">무엇을 계산하나</h2>
+    <p>공 표면 응력장 하나에서 항력과 양력이 같은 크기로, 45° 대칭으로 투영된다고 둡니다. 스핀축 기울기 a는 축으로 펼치지 않고 대칭을 살린 모드로 전개해서, 계수 8개를 담은 3차원 장 하나(1.6 MB)를 읽습니다.</p>
+    <div class="formula">k = (v_ev·|u| + h·w) / √2        du/dt = −k·u + k·(ω̂ × u) − ŷ
+x = c0 + c2·s² + c4·s⁴ + c6·s⁶    z = s·(c1 + c3·s² + c5·s⁴ + c7·s⁶)    s = sin a</div>
+    <p class="note">v_ev = 0.3881, h = 0.2714 (투어 아이언 평균으로 동결). 단위는 무차원이며 공기밀도 1.2 kg/m³에서 1 = 58.54 yd입니다.</p>
+  </section>
+</div>
+
+<script>
+const META = __META__;
+const FIELD_B64 = "__FIELD_B64__";
+const TRUTH_B64 = "__TRUTH_B64__";
+
+function b64ToF32(b64) {
+  const bin = atob(b64);
+  const buf = new ArrayBuffer(bin.length);
+  const u8 = new Uint8Array(buf);
+  for (let i = 0; i < bin.length; i++) u8[i] = bin.charCodeAt(i);
+  return new Float32Array(buf);
+}
+const FIELD = b64ToF32(FIELD_B64);
+const TRUTH = b64ToF32(TRUTH_B64);   // [v, th, s, a, x, z] × 1024
+const NT = TRUTH.length / 6;
+const YD = META.yd;
+const VE = 0.3881 * Math.SQRT1_2, HE = 0.2714 * Math.SQRT1_2;
+const DT = 0.064;
+
+// ---------- 공통 난수 (GPU 와 같은 PCG) ----------
+function pcg(v) {
+  const s = (Math.imul(v >>> 0, 747796405) + 2891336453) >>> 0;
+  const w = Math.imul(((s >>> ((s >>> 28) + 4)) ^ s) >>> 0, 277803737) >>> 0;
+  return ((w >>> 22) ^ w) >>> 0;
+}
+const u01 = x => (x >>> 8) / 16777216;
+const RAD = Math.PI / 180;
+function shotJS(i, seed, out) {
+  const a = pcg((i ^ seed) >>> 0), b = pcg(a), c = pcg(b), d = pcg(c);
+  out[0] = 1.56 + 2.05 * u01(a); out[1] = 5 * RAD + 35 * RAD * u01(b);
+  out[2] = 0.05 + 0.5 * u01(c); out[3] = -40 * RAD + 80 * RAD * u01(d);
+}
+
+// ---------- CPU: 장 읽기 ----------
+function cr(t, o) { const t2 = t * t, t3 = t2 * t; o[0] = 0.5 * (-t3 + 2 * t2 - t); o[1] = 0.5 * (3 * t3 - 5 * t2 + 2); o[2] = 0.5 * (-3 * t3 + 4 * t2 + t); o[3] = 0.5 * (t3 - t2); }
+const W0 = new Float64Array(4), W1 = new Float64Array(4), W2 = new Float64Array(4), ACC = new Float64Array(8);
+const X0 = META.x0, INV = META.inv, HI = [META.n[0] - 3 + 0.99999, META.n[1] - 3 + 0.99999, META.n[2] - 3 + 0.99999];
+const NS = META.n[2], ST0 = META.n[1] * META.n[2];
+function readJS(v, th, s, a, out) {
+  const g0 = Math.min(Math.max((v - X0[0]) * INV[0], 1), HI[0]), i0 = Math.floor(g0);
+  const g1 = Math.min(Math.max((th - X0[1]) * INV[1], 1), HI[1]), i1 = Math.floor(g1);
+  const g2 = Math.min(Math.max((s - X0[2]) * INV[2], 1), HI[2]), i2 = Math.floor(g2);
+  cr(g0 - i0, W0); cr(g1 - i1, W1); cr(g2 - i2, W2); ACC.fill(0);
+  const ns = NS, st0 = ST0;
+  const b = (i0 - 1) * st0 + (i1 - 1) * ns + (i2 - 1);
+  for (let p = 0; p < 4; p++) for (let q = 0; q < 4; q++) {
+    const row = b + p * st0 + q * ns, wpq = W0[p] * W1[q];
+    for (let r = 0; r < 4; r++) {
+      const w = wpq * W2[r], o = (row + r) * 8;
+      for (let m = 0; m < 8; m++) ACC[m] += w * FIELD[o + m];
+    }
+  }
+  const sa = Math.sin(a), s2 = sa * sa;
+  out[0] = ACC[0] + s2 * (ACC[1] + s2 * (ACC[2] + s2 * ACC[3]));
+  out[1] = sa * (ACC[4] + s2 * (ACC[5] + s2 * (ACC[6] + s2 * ACC[7])));
+}
+
+// ---------- CPU: 직접 적분 ----------
+const K = new Float64Array(16);
+function dJS(ux, uy, uz, w, oy, oz, j) {
+  const sp = Math.sqrt(ux * ux + uy * uy + uz * uz), k = VE * sp + HE * w;
+  K[j] = -k * ux + k * (oy * uz - oz * uy); K[j + 1] = -k * uy + k * (oz * ux) - 1;
+  K[j + 2] = -k * uz + k * (-oy * ux); K[j + 3] = -0.06 * w * sp;
+}
+function flyJS(v0, th, s0, a, out) {
+  const oy = Math.sin(a), oz = Math.cos(a), h = DT / 2, s6 = DT / 6;
+  let px = 0, py = 0, pz = 0, ux = v0 * Math.cos(th), uy = v0 * Math.sin(th), uz = 0, w = s0 * v0;
+  for (let step = 1; step < 120; step++) {
+    dJS(ux, uy, uz, w, oy, oz, 0);
+    const u2x = ux + h * K[0], u2y = uy + h * K[1], u2z = uz + h * K[2], w2 = w + h * K[3]; dJS(u2x, u2y, u2z, w2, oy, oz, 4);
+    const u3x = ux + h * K[4], u3y = uy + h * K[5], u3z = uz + h * K[6], w3 = w + h * K[7]; dJS(u3x, u3y, u3z, w3, oy, oz, 8);
+    const u4x = ux + DT * K[8], u4y = uy + DT * K[9], u4z = uz + DT * K[10], w4 = w + DT * K[11]; dJS(u4x, u4y, u4z, w4, oy, oz, 12);
+    const nx = px + s6 * (ux + 2 * u2x + 2 * u3x + u4x), ny = py + s6 * (uy + 2 * u2y + 2 * u3y + u4y), nz = pz + s6 * (uz + 2 * u2z + 2 * u3z + u4z);
+    const vx = ux + s6 * (K[0] + 2 * K[4] + 2 * K[8] + K[12]), vy = uy + s6 * (K[1] + 2 * K[5] + 2 * K[9] + K[13]);
+    const vz = uz + s6 * (K[2] + 2 * K[6] + 2 * K[10] + K[14]), w1 = w + s6 * (K[3] + 2 * K[7] + 2 * K[11] + K[15]);
+    if (step > 1 && ny < 0) {
+      const y0 = py, y1 = ny, m0 = uy * DT, m1 = vy * DT; let s = y0 / (y0 - y1);
+      for (let it = 0; it < 4; it++) {
+        const s2 = s * s, s3 = s2 * s;
+        const f = (2 * s3 - 3 * s2 + 1) * y0 + (s3 - 2 * s2 + s) * m0 + (-2 * s3 + 3 * s2) * y1 + (s3 - s2) * m1;
+        const df = (6 * s2 - 6 * s) * y0 + (3 * s2 - 4 * s + 1) * m0 + (-6 * s2 + 6 * s) * y1 + (3 * s2 - 2 * s) * m1;
+        s = Math.min(Math.max(s - f / df, 0), 1);
+      }
+      const s2 = s * s, s3 = s2 * s, H0 = 2 * s3 - 3 * s2 + 1, H1 = s3 - 2 * s2 + s, H2 = -2 * s3 + 3 * s2, H3 = s3 - s2;
+      out[0] = H0 * px + H1 * ux * DT + H2 * nx + H3 * vx * DT;
+      out[1] = H0 * pz + H1 * uz * DT + H2 * nz + H3 * vz * DT;
+      return;
+    }
+    px = nx; py = ny; pz = nz; ux = vx; uy = vy; uz = vz; w = w1;
+  }
+  out[0] = NaN; out[1] = NaN;
+}
+
+function errVs(fn) {
+  const o = new Float64Array(2); let ex = 0, ez = 0;
+  for (let i = 0; i < NT; i++) {
+    const t = TRUTH.subarray(i * 6, i * 6 + 6);
+    fn(t[0], t[1], t[2], t[3], o);
+    ex = Math.max(ex, Math.abs(o[0] - t[4]) * YD); ez = Math.max(ez, Math.abs(o[1] - t[5]) * YD);
+  }
+  return [ex, ez];
+}
+function benchCPU(fn, n) {
+  const sh = new Float64Array(4), o = new Float64Array(2); let acc = 0, best = Infinity;
+  for (let rep = 0; rep < 3; rep++) {
+    const t0 = performance.now();
+    for (let i = 0; i < n; i++) { shotJS(i, 12345 + rep, sh); fn(sh[0], sh[1], sh[2], sh[3], o); acc += o[0]; }
+    best = Math.min(best, performance.now() - t0);
+  }
+  window.__sink = acc;
+  return best * 1e6 / n; // ns/샷
+}
+
+// ---------- GPU ----------
+const WGSL = `
+struct Meta { x0: vec4<f32>, inv: vec4<f32>, n: vec4<u32>, count: u32, mode: u32, seed: u32, pad: u32 };
+@group(0) @binding(0) var<storage, read> field: array<vec4<f32>>;
+@group(0) @binding(1) var<storage, read> shots: array<vec4<f32>>;
+@group(0) @binding(2) var<storage, read_write> outv: array<vec2<f32>>;
+@group(0) @binding(3) var<uniform> m: Meta;
+
+fn pcg(v: u32) -> u32 { let s = v * 747796405u + 2891336453u; let w = ((s >> ((s >> 28u) + 4u)) ^ s) * 277803737u; return (w >> 22u) ^ w; }
+fn u01(x: u32) -> f32 { return f32(x >> 8u) / 16777216.0; }
+fn shot(i: u32) -> vec4<f32> {
+  if (m.mode == 1u) { return shots[i]; }
+  let a = pcg(i ^ m.seed); let b = pcg(a); let c = pcg(b); let d = pcg(c);
+  return vec4<f32>(1.56 + 2.05 * u01(a), radians(5.0) + radians(35.0) * u01(b), 0.05 + 0.5 * u01(c), radians(-40.0) + radians(80.0) * u01(d));
+}
+fn cr(t: f32) -> vec4<f32> { let t2 = t * t; let t3 = t2 * t; return 0.5 * vec4<f32>(-t3 + 2.0 * t2 - t, 3.0 * t3 - 5.0 * t2 + 2.0, -3.0 * t3 + 4.0 * t2 + t, t3 - t2); }
+fn cellf(q: u32, x: f32) -> vec2<f32> {
+  let f = clamp((x - m.x0[q]) * m.inv[q], 1.0, f32(m.n[q] - 3u) + 0.99999);
+  let i = floor(f); return vec2<f32>(i, f - i);
+}
+fn readField(s: vec4<f32>) -> vec2<f32> {
+  let c0 = cellf(0u, s.x); let c1 = cellf(1u, s.y); let c2 = cellf(2u, s.z);
+  let w0 = cr(c0.y); let w1 = cr(c1.y); let w2 = cr(c2.y);
+  let ns = m.n[2]; let st0 = m.n[1] * m.n[2];
+  let b = (u32(c0.x) - 1u) * st0 + (u32(c1.x) - 1u) * ns + (u32(c2.x) - 1u);
+  var ax = vec4<f32>(0.0); var az = vec4<f32>(0.0);
+  for (var p = 0u; p < 4u; p++) {
+    for (var q = 0u; q < 4u; q++) {
+      let row = b + p * st0 + q * ns; let wpq = w0[p] * w1[q];
+      for (var r = 0u; r < 4u; r++) { let w = wpq * w2[r]; let nd = (row + r) * 2u; ax += w * field[nd]; az += w * field[nd + 1u]; }
+    }
+  }
+  let sa = sin(s.w); let s2 = sa * sa;
+  return vec2<f32>(ax.x + s2 * (ax.y + s2 * (ax.z + s2 * ax.w)), sa * (az.x + s2 * (az.y + s2 * (az.z + s2 * az.w))));
+}
+const VE: f32 = ${VE.toFixed(8)}; const HE: f32 = ${HE.toFixed(8)}; const DT: f32 = ${DT};
+fn deriv(u: vec3<f32>, w: f32, o: vec2<f32>) -> vec4<f32> {
+  let sp = length(u); let k = VE * sp + HE * w;
+  let c = vec3<f32>(o.x * u.z - o.y * u.y, o.y * u.x, -o.x * u.x);
+  return vec4<f32>(-k * u + k * c - vec3<f32>(0.0, 1.0, 0.0), -0.06 * w * sp);
+}
+fn fly(s: vec4<f32>) -> vec2<f32> {
+  let h = 0.5 * DT; let s6 = DT / 6.0; let o = vec2<f32>(sin(s.w), cos(s.w));
+  var p = vec3<f32>(0.0); var u = vec3<f32>(s.x * cos(s.y), s.x * sin(s.y), 0.0); var w = s.z * s.x;
+  for (var step = 1u; step < 120u; step++) {
+    let k1 = deriv(u, w, o); let u2 = u + h * k1.xyz; let w2 = w + h * k1.w;
+    let k2 = deriv(u2, w2, o); let u3 = u + h * k2.xyz; let w3 = w + h * k2.w;
+    let k3 = deriv(u3, w3, o); let u4 = u + DT * k3.xyz; let w4 = w + DT * k3.w;
+    let k4 = deriv(u4, w4, o);
+    let p1 = p + s6 * (u + 2.0 * u2 + 2.0 * u3 + u4);
+    let u1 = u + s6 * (k1.xyz + 2.0 * k2.xyz + 2.0 * k3.xyz + k4.xyz);
+    let w1 = w + s6 * (k1.w + 2.0 * k2.w + 2.0 * k3.w + k4.w);
+    if (step > 1u && p1.y < 0.0) {
+      let y0 = p.y; let y1 = p1.y; let m0 = u.y * DT; let m1 = u1.y * DT; var t = y0 / (y0 - y1);
+      for (var it = 0; it < 4; it++) {
+        let t2 = t * t; let t3 = t2 * t;
+        let f = (2.0 * t3 - 3.0 * t2 + 1.0) * y0 + (t3 - 2.0 * t2 + t) * m0 + (-2.0 * t3 + 3.0 * t2) * y1 + (t3 - t2) * m1;
+        let df = (6.0 * t2 - 6.0 * t) * y0 + (3.0 * t2 - 4.0 * t + 1.0) * m0 + (-6.0 * t2 + 6.0 * t) * y1 + (3.0 * t2 - 2.0 * t) * m1;
+        t = clamp(t - f / df, 0.0, 1.0);
+      }
+      let t2 = t * t; let t3 = t2 * t;
+      let H = vec4<f32>(2.0 * t3 - 3.0 * t2 + 1.0, t3 - 2.0 * t2 + t, -2.0 * t3 + 3.0 * t2, t3 - t2);
+      return vec2<f32>(H.x * p.x + H.y * u.x * DT + H.z * p1.x + H.w * u1.x * DT, H.x * p.z + H.y * u.z * DT + H.z * p1.z + H.w * u1.z * DT);
+    }
+    p = p1; u = u1; w = w1;
+  }
+  return vec2<f32>(0.0);
+}
+@compute @workgroup_size(64) fn readMain(@builtin(global_invocation_id) id: vec3<u32>) {
+  if (id.x >= m.count) { return; } outv[id.x] = readField(shot(id.x));
+}
+@compute @workgroup_size(64) fn directMain(@builtin(global_invocation_id) id: vec3<u32>) {
+  if (id.x >= m.count) { return; } outv[id.x] = fly(shot(id.x));
+}`;
+
+const $ = s => document.querySelector(s);
+const status = msg => { $("#status").textContent = msg; };
+const fmtRate = r => r >= 1e9 ? (r / 1e9).toFixed(2) + "e9" : r.toExponential(2).replace("e+", "e");
+function setRow(k, rate, ns, ex, ez) {
+  const c = document.querySelector(`tr[data-k="${k}"]`).children;
+  c[2].textContent = fmtRate(rate); c[3].textContent = ns < 1 ? ns.toFixed(3) : ns < 10 ? ns.toFixed(2) : Math.round(ns).toLocaleString();
+  c[4].textContent = ex.toFixed(4); c[5].textContent = ez.toFixed(4);
+}
+
+let gpu = null;
+async function initGPU() {
+  const chip = $("#gpu-chip");
+  if (!("gpu" in navigator)) { chip.className = "chip warn"; chip.textContent = "WebGPU 없음"; $("#gpu-info").textContent = "이 브라우저에서는 CPU 행만 잽니다."; return; }
+  try {
+    const adapter = await navigator.gpu.requestAdapter({ powerPreference: "high-performance" });
+    if (!adapter) throw new Error("어댑터를 받지 못했습니다");
+    const device = await adapter.requestDevice();
+    const info = adapter.info || {};
+    chip.className = "chip ok"; chip.textContent = "WebGPU 사용 가능";
+    $("#gpu-info").textContent = [info.vendor, info.architecture, info.description].filter(Boolean).join(" · ") || "어댑터 정보 비공개";
+    const module = device.createShaderModule({ code: WGSL });
+    const ci = await module.getCompilationInfo();
+    const errs = ci.messages.filter(m => m.type === "error");
+    if (errs.length) throw new Error("셰이더 컴파일 오류: " + errs[0].message);
+    const layout = device.createBindGroupLayout({ entries: [
+      { binding: 0, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
+      { binding: 1, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
+      { binding: 2, visibility: GPUShaderStage.COMPUTE, buffer: { type: "storage" } },
+      { binding: 3, visibility: GPUShaderStage.COMPUTE, buffer: { type: "uniform" } } ] });
+    const pl = device.createPipelineLayout({ bindGroupLayouts: [layout] });
+    const pipes = {
+      read: device.createComputePipeline({ layout: pl, compute: { module, entryPoint: "readMain" } }),
+      direct: device.createComputePipeline({ layout: pl, compute: { module, entryPoint: "directMain" } }) };
+    const fieldBuf = device.createBuffer({ size: FIELD.byteLength, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
+    device.queue.writeBuffer(fieldBuf, 0, FIELD);
+    const shots = new Float32Array(NT * 4);
+    for (let i = 0; i < NT; i++) shots.set(TRUTH.subarray(i * 6, i * 6 + 4), i * 4);
+    const shotBuf = device.createBuffer({ size: shots.byteLength, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
+    device.queue.writeBuffer(shotBuf, 0, shots);
+    const metaBuf = device.createBuffer({ size: 64, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+    gpu = { device, layout, pipes, fieldBuf, shotBuf, metaBuf };
+    device.lost.then(i => { chip.className = "chip bad"; chip.textContent = "GPU 연결 끊김"; status("GPU 장치가 사라졌습니다: " + (i.message || i.reason)); gpu = null; });
+  } catch (e) {
+    chip.className = "chip bad"; chip.textContent = "WebGPU 초기화 실패";
+    $("#gpu-info").textContent = String(e.message || e) + " CPU 행만 잽니다.";
+  }
+}
+
+function writeMeta(count, mode, seed) {
+  const b = new ArrayBuffer(64), f = new Float32Array(b), u = new Uint32Array(b);
+  f.set([META.x0[0], META.x0[1], META.x0[2], 0], 0); f.set([META.inv[0], META.inv[1], META.inv[2], 0], 4);
+  u.set([META.n[0], META.n[1], META.n[2], 0], 8); u.set([count, mode, seed, 0], 12);
+  gpu.device.queue.writeBuffer(gpu.metaBuf, 0, b);
+}
+async function gpuRun(kind, count, mode, outBuf, seed) {
+  const { device, layout, pipes, fieldBuf, shotBuf, metaBuf } = gpu;
+  writeMeta(count, mode, seed);
+  const bg = device.createBindGroup({ layout, entries: [
+    { binding: 0, resource: { buffer: fieldBuf } }, { binding: 1, resource: { buffer: shotBuf } },
+    { binding: 2, resource: { buffer: outBuf } }, { binding: 3, resource: { buffer: metaBuf } } ] });
+  const enc = device.createCommandEncoder();
+  const pass = enc.beginComputePass();
+  pass.setPipeline(pipes[kind]); pass.setBindGroup(0, bg); pass.dispatchWorkgroups(Math.ceil(count / 64)); pass.end();
+  device.queue.submit([enc.finish()]);
+  await device.queue.onSubmittedWorkDone();
+}
+async function gpuAccuracy(kind) {
+  const { device } = gpu;
+  const out = device.createBuffer({ size: NT * 8, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC });
+  const rb = device.createBuffer({ size: NT * 8, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST });
+  await gpuRun(kind, NT, 1, out, 0);
+  const enc = device.createCommandEncoder(); enc.copyBufferToBuffer(out, 0, rb, 0, NT * 8); device.queue.submit([enc.finish()]);
+  await rb.mapAsync(GPUMapMode.READ);
+  const r = new Float32Array(rb.getMappedRange().slice(0)); rb.unmap(); out.destroy(); rb.destroy();
+  let ex = 0, ez = 0;
+  for (let i = 0; i < NT; i++) { ex = Math.max(ex, Math.abs(r[2 * i] - TRUTH[i * 6 + 4]) * YD); ez = Math.max(ez, Math.abs(r[2 * i + 1] - TRUTH[i * 6 + 5]) * YD); }
+  return [ex, ez];
+}
+async function gpuBench(kind, count) {
+  const out = gpu.device.createBuffer({ size: count * 8, usage: GPUBufferUsage.STORAGE });
+  await gpuRun(kind, count, 0, out, 7); // 예열
+  let best = Infinity;
+  for (let rep = 0; rep < 5; rep++) { const t0 = performance.now(); await gpuRun(kind, count, 0, out, 100 + rep); best = Math.min(best, performance.now() - t0); }
+  out.destroy();
+  return best * 1e6 / count;
+}
+
+const tick = () => new Promise(r => setTimeout(r, 0));
+async function run() {
+  const btn = $("#run"); btn.disabled = true;
+  const res = {};
+  try {
+    if (gpu) {
+      const n = Number($("#n-shots").value);
+      for (const kind of ["read", "direct"]) {
+        status(`GPU ${kind === "read" ? "장 읽기" : "직접 적분"}: 정확도 확인 중`); await tick();
+        const [ex, ez] = await gpuAccuracy(kind);
+        status(`GPU ${kind === "read" ? "장 읽기" : "직접 적분"}: ${n.toLocaleString()}샷 측정 중`); await tick();
+        const ns = await gpuBench(kind, n);
+        res["gpu-" + kind] = ns; setRow("gpu-" + kind, 1e9 / ns, ns, ex, ez);
+      }
+    }
+    status("CPU 장 읽기 측정 중"); await tick();
+    { const [ex, ez] = errVs(readJS); const ns = benchCPU(readJS, 60000); res["cpu-read"] = ns; setRow("cpu-read", 1e9 / ns, ns, ex, ez); }
+    status("CPU 직접 적분 측정 중"); await tick();
+    { const [ex, ez] = errVs(flyJS); const ns = benchCPU(flyJS, 15000); res["cpu-direct"] = ns; setRow("cpu-direct", 1e9 / ns, ns, ex, ez); }
+    const parts = [];
+    if (res["gpu-read"]) parts.push(`GPU에서 장 읽기는 직접 적분보다 <strong>${(res["gpu-direct"] / res["gpu-read"]).toFixed(1)}배</strong> 빠르고, CPU 장 읽기보다 <strong>${(res["cpu-read"] / res["gpu-read"]).toFixed(0)}배</strong> 빠릅니다.`);
+    parts.push(`CPU에서 장 읽기는 직접 적분보다 <strong>${(res["cpu-direct"] / res["cpu-read"]).toFixed(1)}배</strong> 빠릅니다.`);
+    $("#summary").innerHTML = parts.join(" ");
+    $("#summary").classList.remove("note");
+    status("측정 완료. 다시 누르면 새로 잽니다.");
+  } catch (e) {
+    status("측정 중 오류: " + (e.message || e));
+  } finally { btn.disabled = false; }
+}
+
+$("#run").addEventListener("click", run);
+initGPU();
+</script>

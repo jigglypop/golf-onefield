@@ -447,7 +447,42 @@ fn throughput<F: Fn(f32, f32, f32, f32) -> (f32, f32) + Sync>(q: &[[f32; 4]], th
     1e9 / ns
 }
 
+/// 웹 벤치마크용 내보내기: 모드 장(K=4) 계수와 기준값 샷 1024개를 ../web 에 쓴다.
+fn dump() {
+    let fm = FieldModes::<4, 8>::unfold([32, 51, 31], 12, 45.0, 0.032, 2);
+    std::fs::create_dir_all("../web").unwrap();
+    let mut bytes = Vec::with_capacity(fm.c.len() * 32);
+    for node in &fm.c {
+        for v in node {
+            bytes.extend_from_slice(&v.to_le_bytes());
+        }
+    }
+    std::fs::write("../web/field_k4.bin", &bytes).unwrap();
+    let meta = format!(
+        "{{\"x0\":[{},{},{}],\"inv\":[{},{},{}],\"n\":[{},{},{}],\"yd\":{}}}",
+        fm.x0[0], fm.x0[1], fm.x0[2], fm.inv[0], fm.inv[1], fm.inv[2], fm.n[0], fm.n[1], fm.n[2], YD
+    );
+    std::fs::write("../web/field_meta.json", meta).unwrap();
+    let mut rng = Rng(0xC0FFEE);
+    let shots: Vec<[f64; 4]> = (0..1024)
+        .map(|_| [rng.uni(1.56, 3.61), rng.uni(5f64.to_radians(), 40f64.to_radians()), rng.uni(0.05, 0.55), rng.uni(-40f64.to_radians(), 40f64.to_radians())])
+        .collect();
+    let truth = run3::<8>(&shots, 0.0005);
+    let mut tb = Vec::new();
+    for (s, t) in shots.iter().zip(&truth) {
+        for v in [s[0], s[1], s[2], s[3], t.0, t.1] {
+            tb.extend_from_slice(&(v as f32).to_le_bytes());
+        }
+    }
+    std::fs::write("../web/truth.bin", &tb).unwrap();
+    println!("../web 에 field_k4.bin ({} B), field_meta.json, truth.bin ({} B) 기록", bytes.len(), tb.len());
+}
+
 fn main() {
+    if std::env::args().any(|a| a == "--dump") {
+        dump();
+        return;
+    }
     // ---- 0. 파이썬 일치
     let refs: Vec<[f64; 6]> = std::fs::read_to_string("../refs3d.csv")
         .expect("refs3d.csv")
