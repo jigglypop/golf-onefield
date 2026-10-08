@@ -1,0 +1,18 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(cargo build:*)",
+      "Bash(cargo test:*)",
+      "Bash(cargo run:*)",
+      "Bash(./target/quick/*)",
+      "Bash(./target/release/*)",
+      "Bash(flightbench/target/quick/*)",
+      "Bash(tools/run_shot.sh:*)",
+      "Bash(tools/e2e_synth.sh:*)",
+      "Bash(python3 -B tools/*)",
+      "Bash(git status:*)",
+      "Bash(git diff:*)",
+      "Bash(git log:*)"
+    ]
+  }
+}

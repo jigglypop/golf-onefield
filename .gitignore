@@ -12,3 +12,9 @@ fewshot_reg.out
 web/*.bin
 web/field_meta.json
 web/onefield_bench.html
+
+# 영상 파이프라인 산출물
+*_t.csv
+*_track.mp4
+data/real/**/*.mp4
+data/real/**/*.mov
