@@ -507,3 +507,40 @@ pub fn score_fs<F: Flight3 + ?Sized>(m: &F, fs: &[[f64; 6]]) -> [f64; 6] {
     let bin = |lo: f64, hi: f64| rmse(&fs.iter().zip(&ec).filter(|(r, _)| r[0] >= lo && r[0] < hi).map(|(_, e)| *e).collect::<Vec<_>>());
     [rmse(&ec), bin(0.0, 80.0), bin(80.0, 110.0), bin(110.0, 1e9), rmse(&ea), ec.iter().sum::<f64>() / ec.len() as f64]
 }
+
+/// 한 행 빼기 교차검증: 행 하나를 빼고 맞춘 뒤 그 행을 예측한다 (전체 맞춤값에서 시작).
+/// 반환 [캐리, 높이, 착지 RMSE, 세 양 합친 RMSE]. 판정 자료를 보지 않고 꼴을 고르는 기준.
+pub fn loo_cv(m: &Model, rows: &[[f64; 6]], w: [f64; 3], threads: usize) -> [f64; 4] {
+    let n = rows.len();
+    let idx: Vec<usize> = (0..n).collect();
+    let chunk = n.div_ceil(threads.max(1));
+    let mut errs: Vec<[f64; 3]> = vec![[0.0; 3]; n];
+    std::thread::scope(|sc| {
+        let hs: Vec<_> = idx
+            .chunks(chunk)
+            .map(|part| {
+                let m = m.clone();
+                sc.spawn(move || {
+                    part.iter()
+                        .map(|&i| {
+                            let tr: Vec<[f64; 6]> = rows.iter().enumerate().filter(|(j, _)| *j != i).map(|(_, r)| *r).collect();
+                            let mut mi = m.clone();
+                            fit(&mut mi, &tr, w);
+                            let r = rows[i];
+                            let o = mi.obs(r[0], r[1], r[2]);
+                            (i, [o[0] - r[3], o[1] - r[4], o[2] - r[5]])
+                        })
+                        .collect::<Vec<_>>()
+                })
+            })
+            .collect();
+        for h in hs {
+            for (i, e) in h.join().unwrap() {
+                errs[i] = e;
+            }
+        }
+    });
+    let col = |c: usize| (errs.iter().map(|e| e[c] * e[c]).sum::<f64>() / n as f64).sqrt();
+    let all = (errs.iter().map(|e| (0..3).map(|c| w[c].min(1.0) * e[c] * e[c]).sum::<f64>()).sum::<f64>() / (n as f64 * w.iter().filter(|x| **x > 0.0).count() as f64)).sqrt();
+    [col(0), col(1), col(2), all]
+}

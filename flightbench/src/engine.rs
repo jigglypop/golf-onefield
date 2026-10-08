@@ -74,6 +74,27 @@ impl Aero for Shared {
     }
 }
 
+/// 공유 포화 장 + 항력 위기: 배경 항력이 느린 공에서 e 만큼 오른다.
+///   C_D = v + e/(1 + (|u|/u0)^4) + d r,  C_L = c r,  r = S/(1 + l S)
+///   u0 = Re0 / RE_PER_U (Re0 ≈ 6.3e4, 문헌의 임계 영역 4–6e4 근처)
+#[derive(Clone, Copy, Debug)]
+pub struct SharedRe {
+    pub v: f64,
+    pub e: f64,
+    pub u0: f64,
+    pub d: f64,
+    pub c: f64,
+    pub l: f64,
+}
+impl Aero for SharedRe {
+    #[inline(always)]
+    fn kk(&self, sp: f64, w: f64) -> (f64, f64) {
+        let r = w * sp / (sp + self.l * w);
+        let q = sp * sp / (self.u0 * self.u0);
+        ((self.v + self.e / (1.0 + q * q)) * sp + self.d * r, self.c * r)
+    }
+}
+
 #[derive(Clone, Copy)]
 pub struct B4 {
     pub d0: f64,
@@ -341,6 +362,30 @@ impl FastAero for Shared {
         let inv = r0 * F::fnma(den, r0, F::splat(2.0));
         let r = w * sp * inv;
         (sp, F::fma(p[0], sp, p[1] * r), p[2] * r)
+    }
+}
+
+impl FastAero for SharedRe {
+    type P = [F; 6];
+    fn prep(&self) -> [F; 6] {
+        [self.v, self.e, 1.0 / (self.u0 * self.u0), self.d, self.c, self.l].map(|x| F::splat(x as f32))
+    }
+    #[inline(always)]
+    fn kk(p: &[F; 6], q: F, w: F) -> (F, F, F) {
+        let sp = sqrt_nr(q);
+        let one = F::splat(1.0);
+        let two = F::splat(2.0);
+        // 역수 두 개를 rcp14 + 뉴턴 1회로: 1/(sp + l w), 1/(1 + (q/u0^2)^2)
+        let den = F::fma(p[5], w, sp);
+        let a0 = den.rcp14();
+        let inv = a0 * F::fnma(den, a0, two);
+        let x = q * p[2];
+        let den2 = F::fma(x, x, one);
+        let b0 = den2.rcp14();
+        let inv2 = b0 * F::fnma(den2, b0, two);
+        let r = w * sp * inv;
+        let cd0 = F::fma(p[1], inv2, p[0]);
+        (sp, F::fma(cd0, sp, p[3] * r), p[4] * r)
     }
 }
 

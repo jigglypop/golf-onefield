@@ -39,6 +39,15 @@
 //!   줄이지만 FS 느린 공을 5.7 yd 로 망친다: 실측 아마추어 평균과 FlightScope 계산이 느린 공에서 서로 다르다.
 //!   PGA+LPGA 로 넓혀 맞춰도(--tour) 같은 그림: 공유 USGA 8.40 대 OF+2 8.16, FS 2.76 대 3.91.
 //!
+//! 꼴 고르기를 판정 자료에서 떼어냄 (--cv): 투어 23행 한 행 빼기 교차검증으로만 고르고 USGA·FS 는 판정에만.
+//!   models_search.txt 13개 꼴 중 1위 '공유위기' (CV 2.82, 공유 3.22, B4 4.21, H2 4.30):
+//!     C_D = v + e/(1 + (Re/r0)^4) + d r,  C_L = c r,  r = S/(1 + l S)   (6매, r0 = 6.3e4: 문헌의 임계 영역 4–6e4 근처)
+//!   PGA 만 훈련:      LPGA 2.85 1.73 3.18 (OF+2 3.42 2.98 5.30)  USGA 7.34/15.11/3.21 (OF+2 8.06/14.29/5.49)  FS 4.28·0.51 (OF+2 4.16·1.86)
+//!   PGA+LPGA 훈련:    USGA 7.52/14.57/4.20 (OF+2 8.16/14.06/5.81)  FS 3.12/느림 2.59·높이 0.77 (OF+2 3.91/2.84·1.84)
+//!   지는 곳은 USGA 프로 4행(0.5–0.8 yd)과 PGA 만 훈련 때 FS 캐리(0.12 yd)뿐.
+//!   [주의] '느린 공 항력 상승'이라는 방향 자체는 앞 단계에서 판정 자료(USGA 아마추어)를 보고 얻은 단서다.
+//!   빠른 엔진: 193 ns/샷, 적분 오차 2.4e-4 yd. 시험대 수식과 엔진 구현의 캐리 차 3.7e-6 yd.
+//!
 //! --engines (무작위 2000샷, 1코어, 자기 수렴해 대비 캐리 오차)
 //!   OpenFairway 이식 120 Hz (원본)   64,724 ns   최대 0.99 yd  RMS 0.49 yd
 //!   OpenFairway 이식 1000 Hz        496,622 ns   최대 0.12 yd
@@ -47,7 +56,7 @@
 //!   → 같은 샷에서 290–350배 빠르고 적분 오차는 3,500배 작다. 기존 엔진은 C# 원본이 아니라 러스트 이식이라
 //!     실제 격차는 이보다 크거나 같다. 이식은 원본 회귀 시험 16개 중 14개 창 안 (벗어난 최대 1.08 yd).
 
-use flightbench::engine::{dimless, run, stream_par, usga_samples, Aero, FastAero, Shared, H2 as H2f, USGA, YD};
+use flightbench::engine::{dimless, run, stream_par, usga_samples, Aero, FastAero, Shared, SharedRe, H2 as H2f, USGA, YD};
 use flightbench::harness::*;
 use flightbench::openfairway::{self as of, OpenFairway};
 use std::time::Instant;
@@ -100,6 +109,31 @@ fn main() {
     println!("RMSE: 캐리 yd / 높이 yd / 착지 deg");
     println!("FS: FlightScope 계산값 175샷 캐리 RMSE (전체 / <80 mph / 80–110 / >110), 최고 높이 RMSE yd, 캐리 부호 오차");
     println!("{:<8} {:>2} | {:^17} | {:^17} | {:^24} | {:^35} | {:>5} | 매개변수", "모형", "k", "PGA 훈련", "LPGA 보류", "USGA 전체 프로 아마 부호", "FS 캐리 전체 느림 중간 빠름 높이 부호", "ms");
+    if flag("--cv") {
+        // 꼴 고르기: 훈련 자료 안의 한 행 빼기 교차검증으로만. USGA·FS 는 고르기에 쓰지 않는 판정 자료.
+        println!("\n[--cv] 훈련 {}행 한 행 빼기 교차검증 (고르기 기준) + 판정 자료 (고르기에 안 씀)", train.len());
+        println!("{:<10} {:>2} | {:^24} | {:^17} | {:^23} | {:>5}", "모형", "k", "CV 캐리 높이 착지 종합", "USGA 전체 프로 아마", "FS 캐리 느림 높이 부호", "s");
+        let mut rows_out = Vec::new();
+        for m in models.iter_mut() {
+            let t0 = Instant::now();
+            fit(m, &train, wts);
+            let cv = loo_cv(m, &train, wts, 2);
+            let u = usga_gh(m);
+            let e: Vec<f64> = u.iter().zip(USGA.iter()).map(|(a, r)| a - r.7).collect();
+            let pro: Vec<f64> = (0..20).filter(|&i| USGA[i].0.ends_with("Pro")).map(|i| e[i]).collect();
+            let am: Vec<f64> = (0..20).filter(|&i| !USGA[i].0.ends_with("Pro")).map(|i| e[i]).collect();
+            let fs = score_fs(m, FS.get_or_init(|| load_fs("fs_shots.csv")));
+            let ps = m.pnames.iter().zip(&m.p).filter(|_| true).map(|(n, v)| format!("{n}={v:.4}")).collect::<Vec<_>>().join(" ");
+            rows_out.push((cv[3], format!("{:<10} {:>2} | {:>5.2} {:>5.2} {:>5.2} {:>6.3} | {:>5.2} {:>5.2} {:>5.2} | {:>5.2} {:>5.2} {:>5.2} {:>+5.1} | {:>5.1} | {}",
+                m.name, m.free().len(), cv[0], cv[1], cv[2], cv[3], rmse(&e), rmse(&pro), rmse(&am), fs[0], fs[1], fs[4], fs[5], t0.elapsed().as_secs_f64(), ps)));
+        }
+        rows_out.sort_by(|a, b| a.0.total_cmp(&b.0));
+        for r in rows_out {
+            println!("{}", r.1);
+        }
+        println!("총 {:.2} s", t_all.elapsed().as_secs_f64());
+        return;
+    }
     for m in models.iter_mut() {
         let t0 = Instant::now();
         fit(m, &train, wts);
@@ -247,4 +281,12 @@ fn engines() {
     }
     ours("H2", &H2f { v: 0.2418, d: 0.2475, c: 2.401, lam: 7.08, e: 0.0 }, &dl, &s32, &big);
     ours("공유", &Shared { v: 0.1156, d: 1.7695, c: 2.5881, l: 4.5843 }, &dl, &s32, &big);
+    let u0 = 62859.6581 / flightbench::harness::RE_PER_U;
+    let sre = SharedRe { v: 0.1330, e: 0.3247, u0, d: 1.3688, c: 2.7901, l: 5.9226 };
+    ours("공유+항력위기", &sre, &dl, &s32, &big);
+    // 시험대 수식(models.txt)과 엔진 구현이 같은 장인지: 같은 샷의 캐리 차
+    let m = load_models("[x]\nkd = (v + e/(1 + (Re/r0)^4))*u + d*w*u/(u + l*w)\nkl = c*w*u/(u + l*w)\nv = 0.1330\ne = 0.3247\nr0 = 62859.6581\nd = 1.3688\nc = 2.7901\nl = 5.9226\n").unwrap().remove(0);
+    let truth = run(&sre, &dl, 0.0002);
+    let dmax = shots.iter().zip(&truth).fold(0.0f64, |a, (s, t)| a.max((m.obs3(s[0], s[1], s[2], s[3])[0] - t.0 * YD).abs()));
+    println!("시험대 수식 대 엔진 구현 (공유+항력위기): 캐리 차 최대 {dmax:.1e} yd");
 }
