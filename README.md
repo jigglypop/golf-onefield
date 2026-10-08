@@ -309,6 +309,21 @@ $$
   JS 엔진은 러스트와 프레임 위치·캐리가 소수 9자리까지 같고, GPU(f32) 격자와 CPU(f64) 격자의 제곱오차 차는 1.6% 이내, 최솟값 위치는 같다.
   실제 측정 프레임(t x y z)을 붙여 넣어 역보정할 수 있다. 공 검출(영상 → 프레임 위치)은 아직 없다.
 
+### 스크린을 스핀 센서로 (`flightbench/src/bin/screen.rs`)
+
+실내 3 m 비행만으로는 스핀이 안 보인다. 대신 스크린 충돌 식을 관측 식에 넣는다. 굴림 영역에서
+$\Delta v_t=-k_t\,(v_t+(\boldsymbol\omega\times\mathbf r_c)_t)$, $\Delta\boldsymbol\omega=\tfrac{5}{2R^2}\,\mathbf r_c\times\Delta\mathbf v_t$ 라서
+1000 rpm 차이가 반동 접선 속도 약 0.6 m/s 차이가 된다(강체 $k_t=2/7$; 천 스크린은 $k_t$ 를 미지수로 둔다).
+
+| 대각 카메라, 240 fps, σ 5 mm, 반동 0.1 s | 드라이버 캐리 | 드라이버 스핀 | 7번 캐리 | 웨지 캐리 |
+|---|---|---|---|---|
+| 스크린 없이 3 m 비행만 | 9.7 yd | ±1247 rpm | 3.4 yd | 2.0 yd |
+| **스크린 반동, $k_t$ 보정됨** | **1.7 yd** | **±202 rpm** | **0.9 yd** | **0.3 yd** |
+| 스크린 반동, $k_t$ 모름 | 5.2 yd | ±838 rpm | 1.7 yd | 0.4 yd |
+
+$k_t$ 는 스크린 상수라 샷끼리 공유된다. 여러 샷을 함께 맞추는 자가 보정으로 5샷에 ±0.006, 40샷에 ±0.0023 (보정됨 기준 ±0.01 보다 좋음).
+단 자가 보정은 참 스핀의 평균이 투어 회귀와 같다는 가정에 기댄다. 모든 수치는 시뮬레이션이며, 천 스크린이 굴림 꼴 충돌 식을 따르는지는 실측으로 확인해야 한다.
+
 ### 지면 접촉 (`ground.py`) — 검증 실패
 
 Penner 강체 바운스(브리스톨 적합 계수) + 미끄럼 + 구름 저항 1매개. USGA 런(총거리 − 캐리)에서 모든 조합이
@@ -359,6 +374,7 @@ Penner 강체 바운스(브리스톨 적합 계수) + 미끄럼 + 구름 저항 
 | `flightbench/models.txt`, `src/bin/quick.rs`, `src/harness.rs`, `src/expr.rs` | 빠른 시험대: 수식으로 적은 항, LM 보정, 가우스-에르미트 USGA |
 | `flightbench/src/openfairway.rs` | 기존 엔진 OpenFairway 비행 물리 이식 (MIT) — 비교 기준 |
 | `flightbench/src/bin/spininv.rs`, `web/spin_inverse.html` | 스핀 역보정 가관측성 연구, WebGPU 역보정 페이지 |
+| `flightbench/src/bin/screen.rs` | 스크린 반동으로 스핀 찾기, 스크린 상수 자가 보정 |
 | `flightbench/models_search.txt` | 교차검증 꼴 찾기 후보 13개 |
 | `flightbench/fs_shots.csv`, `flightbench/models_tried.txt` | FlightScope 계산값 175샷 (OpenFairway 저장소, MIT), 시험한 후보 꼴 전부 |
 | `flightbench/` | 러스트 엔진과 병목 측정 |
