@@ -324,6 +324,35 @@ $\Delta v_t=-k_t\,(v_t+(\boldsymbol\omega\times\mathbf r_c)_t)$, $\Delta\boldsym
 $k_t$ 는 스크린 상수라 샷끼리 공유된다. 여러 샷을 함께 맞추는 자가 보정으로 5샷에 ±0.006, 40샷에 ±0.0023 (보정됨 기준 ±0.01 보다 좋음).
 단 자가 보정은 참 스핀의 평균이 투어 회귀와 같다는 가정에 기댄다. 모든 수치는 시뮬레이션이며, 천 스크린이 굴림 꼴 충돌 식을 따르는지는 실측으로 확인해야 한다.
 
+### 실제 영상으로 해 보기 (`tools/`)
+
+```sh
+pip install opencv-python numpy
+# 1) 보정: 공을 손으로 벽에 3–5번 던진다. 벽에 닿을 때 공이 아직 올라가는 중이어야 한다(접선 속도가 있어야 k_t 가 보임)
+tools/run_shot.sh throw1.mp4 240 70 3.0 --throw          # → k_t, e 출력
+# 2) 샷: 위에서 얻은 k_t 를 넣는다
+tools/run_shot.sh shot1.mp4 240 70 3.0 --kt 0.284 --kt-sd 0.01
+# 벽 없이 비행만 찍었으면 벽 거리를 빼면 된다
+tools/run_shot.sh range1.mp4 240 70
+```
+
+촬영: 폰을 비행 방향과 직각으로(옆에서) 수평으로 고정, 슬로모 240 fps, 출발점과 벽이 한 화면에. 인수는 fps, 가로 화각(도, 기종마다 다름), 출발점~벽 면 거리(m).
+
+- `track_ball.py`: 배경(중앙값) 차분 → 공 크기 덩어리 → 등속 예측 추적(벽 반동에서 다시 잡음). 축척은 벽 충돌 위치(충돌 전·후 궤적의 교점)로 잡고,
+  카메라 축 위치·거리를 CSV 머리줄(`# cam`)에 남겨 역보정이 원근(공이 평면에서 벗어날 때)을 되돌린다. `--debug` 로 추적 표시 영상.
+- `screen --csv` / `spininv --csv`: 빠진 프레임(NaN)을 건너뛰고, 좌우(z)를 못 보면 방위각 0 ± 3° 사전값을 쓴다. 닫힌 꼴로 출발 → LM.
+- 가짜 영상 검산(`make_synth_video.py`, 1280×720, 공 반지름 6.5 px, 셔터 1/2000 s, 픽셀 노이즈): 추적 오차 1 mm 안팎.
+
+| 가짜 영상 (240 fps, 단단한 벽 3 m) | 참값 | 영상 → 추적 → 역보정 |
+|---|---|---|
+| 7번 120 mph 16.3° | 7097 rpm, 축 8°, 캐리 168.2 yd | 7045 rpm, 6.6°, **167.9 yd** (k_t 0.2860, e 0.601) |
+| 드라이버 167 mph 10.9° | 2686 rpm, 8°, 268.7 yd | 2851 rpm, 2.1°, **264.7 yd** |
+| 웨지 86 mph 25.7° | 8403 rpm, −5°, 105.3 yd | 8813 rpm, −7.8°, **104.6 yd** |
+| 던지기 30 mph 22° (보정) | k_t 0.2857, e 0.6 | k_t 0.2849, e 0.600 |
+
+던지기 보정은 벽에 닿을 때 접선 속도가 거의 0이면(포물선 꼭대기에서 맞으면) k_t 가 정해지지 않는다(25 mph 15° 던지기: 0.245).
+실제 영상의 롤링 셔터, 렌즈 왜곡, 조명, 사람·클럽이 함께 움직이는 배경은 아직 다루지 않았다.
+
 ### 지면 접촉 (`ground.py`) — 검증 실패
 
 Penner 강체 바운스(브리스톨 적합 계수) + 미끄럼 + 구름 저항 1매개. USGA 런(총거리 − 캐리)에서 모든 조합이
@@ -375,6 +404,7 @@ Penner 강체 바운스(브리스톨 적합 계수) + 미끄럼 + 구름 저항 
 | `flightbench/src/openfairway.rs` | 기존 엔진 OpenFairway 비행 물리 이식 (MIT) — 비교 기준 |
 | `flightbench/src/bin/spininv.rs`, `web/spin_inverse.html` | 스핀 역보정 가관측성 연구, WebGPU 역보정 페이지 |
 | `flightbench/src/bin/screen.rs` | 스크린 반동으로 스핀 찾기, 스크린 상수 자가 보정 |
+| `tools/track_ball.py`, `tools/run_shot.sh`, `tools/make_synth_video.py` | 영상 → 공 추적 → 역보정 파이프라인, 가짜 영상 검산 |
 | `flightbench/models_search.txt` | 교차검증 꼴 찾기 후보 13개 |
 | `flightbench/fs_shots.csv`, `flightbench/models_tried.txt` | FlightScope 계산값 175샷 (OpenFairway 저장소, MIT), 시험한 후보 꼴 전부 |
 | `flightbench/` | 러스트 엔진과 병목 측정 |

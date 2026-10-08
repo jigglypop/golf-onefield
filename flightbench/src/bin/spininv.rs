@@ -90,8 +90,10 @@ fn resid(ae: &SharedRe, p: &[f64; 8], obs: &[[f64; 3]], sig: [f64; 3], fdt: f64,
     let m = sample(ae, p, obs.len(), fdt);
     let mut r = Vec::with_capacity(obs.len() * 3 + 2);
     for (a, b) in m.iter().zip(obs) {
+        let a = project(*a);
         for c in 0..3 {
-            r.push((a[c] - b[c]) / sig[c]);
+            // 빠진 프레임은 NaN: 잔차 0
+            r.push(if b[c].is_finite() { (a[c] - b[c]) / sig[c] } else { 0.0 });
         }
     }
     r.push((p[6] - prior) / PRIOR_SD);
@@ -181,12 +183,12 @@ impl Rng {
 
 /// 노이즈 없는 앞 몇 프레임의 2차 맞춤으로 처음 속도를 어림 (맞춤 시작점)
 fn initial_guess(obs: &[[f64; 3]], fdt: f64, rpm0: f64) -> [f64; 8] {
-    let n = obs.len().min(8);
+    let ks: Vec<usize> = (0..obs.len()).filter(|&k| obs[k][0].is_finite()).take(8).collect();
     // 각 축 x(t) = a + b t + c t^2 최소제곱
     let mut coef = [[0.0; 3]; 3];
     for c in 0..3 {
         let mut a = vec![vec![0.0; 4]; 3];
-        for k in 0..n {
+        for &k in &ks {
             let t = k as f64 * fdt;
             let b = [1.0, t, t * t];
             for i in 0..3 {
@@ -204,8 +206,80 @@ fn initial_guess(obs: &[[f64; 3]], fdt: f64, rpm0: f64) -> [f64; 8] {
     [coef[0][0], coef[1][0], coef[2][0], v, (vy / v).asin(), vz.atan2(vx), rpm0, 0.0]
 }
 
+/// CSV (t,x,y,z 미터·초; x 앞, y 위, z 오른쪽) → 프레임 배열 (빠진 프레임 NaN), 프레임 간격
+/// 옆 카메라 투영 [xc, yc, Z0, sgn]: 평면 밖으로 z 만큼 나온 점이 화면 평면에 비치는 위치
+static CAM: std::sync::OnceLock<[f64; 4]> = std::sync::OnceLock::new();
+#[inline]
+fn project(p: [f64; 3]) -> [f64; 3] {
+    match CAM.get() {
+        Some(c) => {
+            let s = c[2] / (c[2] + c[3] * p[2]);
+            [c[0] + (p[0] - c[0]) * s, c[1] + (p[1] - c[1]) * s, p[2]]
+        }
+        None => p,
+    }
+}
+
+fn read_csv(path: &str) -> (Vec<[f64; 3]>, f64) {
+    let rows: Vec<[f64; 4]> = std::fs::read_to_string(path).expect("CSV 읽기").lines()
+        .filter(|l| !l.trim_start().starts_with('#'))
+        .filter_map(|l| { let v: Vec<f64> = l.split(|c| c == ',' || c == ' ' || c == '\t').filter(|x| !x.is_empty()).filter_map(|x| x.parse().ok()).collect(); (v.len() >= 4).then(|| [v[0], v[1], v[2], v[3]]) })
+        .collect();
+    assert!(rows.len() >= 5, "프레임이 5개 이상 필요");
+    // "# cam xc yc Z0 sgn": 카메라 투영 (track_ball.py 가 씀)
+    if let Some(l) = std::fs::read_to_string(path).unwrap().lines().find(|l| l.starts_with("# cam")) {
+        let v: Vec<f64> = l[5..].split_whitespace().filter_map(|x| x.parse().ok()).collect();
+        if v.len() == 4 {
+            let _ = CAM.set([v[0], v[1], v[2], v[3]]);
+            eprintln!("카메라 투영 사용: 축 위치 ({:.3}, {:.3}) m, 거리 {:.3} m", v[0], v[1], v[2]);
+        }
+    }
+    let mut dts: Vec<f64> = rows.windows(2).map(|w| w[1][0] - w[0][0]).filter(|d| *d > 0.0).collect();
+    dts.sort_by(f64::total_cmp);
+    let fdt = dts[dts.len() / 2];
+    let n = ((rows.last().unwrap()[0] - rows[0][0]) / fdt).round() as usize + 1;
+    let mut obs = vec![[f64::NAN; 3]; n];
+    for r in &rows {
+        let k = ((r[0] - rows[0][0]) / fdt).round() as usize;
+        if k < n { obs[k] = [r[1], r[2], r[3]]; }
+    }
+    (obs, fdt)
+}
+
+fn arg(name: &str) -> Option<String> {
+    let a: Vec<String> = std::env::args().collect();
+    a.iter().position(|x| x == name).and_then(|i| a.get(i + 1).cloned())
+}
+
 fn main() {
     let ae = field();
+    if let Some(path) = arg("--csv") {
+        // 실제 프레임 역보정 (비행만): --sig 위치 노이즈 mm (기본 5), --cam side|behind (깊이 축 ×5)
+        let (obs, fdt) = read_csv(&path);
+        let sg = arg("--sig").and_then(|v| v.parse::<f64>().ok()).unwrap_or(5.0) / 1000.0;
+        let sig = if arg("--cam").as_deref() == Some("behind") { [5.0 * sg, sg, sg] } else { [sg, sg, 5.0 * sg] };
+        let g0 = initial_guess(&obs, fdt, 0.0);
+        let prior = prior_rpm(g0[3] / 0.44704, g0[4].to_degrees());
+        let mut best = ([0.0; 8], f64::INFINITY, [0.0; 8]);
+        for r0 in [prior, 2000.0, 5000.0, 9000.0] {
+            let f = fit(&ae, initial_guess(&obs, fdt, r0), &obs, sig, fdt, prior);
+            if f.1 < best.1 { best = f; }
+        }
+        let (p, chi2, cov) = best;
+        let nobs = obs.iter().filter(|o| o[0].is_finite()).count();
+        let c0 = carry(&ae, &p);
+        let mut var = 0.0;
+        for k in [3usize, 4, 6] {
+            let mut q = p; let h = [0.0, 0.0, 0.0, 0.05, 1e-3, 0.0, 20.0, 0.0][k]; q[k] += h;
+            let g = (carry(&ae, &q) - c0) / h; var += g * g * cov[k];
+        }
+        println!("프레임 {nobs}개 (간격 {:.2} ms, {:.0} fps), 카이제곱/자유도 {:.2}", fdt * 1e3, 1.0 / fdt, chi2 / (3 * nobs).saturating_sub(8).max(1) as f64);
+        println!("볼스피드 {:.1} mph ±{:.1}, 발사각 {:.2}° ±{:.2}, 방위각 {:.2}°", p[3] / 0.44704, cov[3].sqrt() / 0.44704, p[4].to_degrees(), cov[4].sqrt().to_degrees(), p[5].to_degrees());
+        println!("스핀 {:.0} rpm ±{:.0} (사전값 {:.0}), 스핀축 {:.1}° ±{:.1}", p[6], cov[6].sqrt(), prior, p[7].to_degrees(), cov[7].sqrt().to_degrees());
+        println!("캐리 {:.1} yd ±{:.1} (대각 공분산만, 근사)", c0, var.sqrt());
+        if cov[6].sqrt() > 0.8 * PRIOR_SD { println!("주의: 스핀이 관측으로 거의 정해지지 않음 (사전값에 기댐). 더 길게 찍거나 벽 반동(screen --csv)을 쓰세요."); }
+        return;
+    }
     if std::env::args().any(|a| a == "--dump") {
         // 웹 페이지 대조용: 드라이버, 240 fps, 0.2 s 의 깨끗한 프레임과 캐리
         let truth = [0.0, 0.02, 0.0, 167.0 * 0.44704, 10.9f64.to_radians(), 2f64.to_radians(), 2686.0, 8f64.to_radians()];

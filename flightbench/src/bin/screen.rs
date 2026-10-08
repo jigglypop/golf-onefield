@@ -159,6 +159,9 @@ fn solve(mut a: Vec<Vec<f64>>) -> Vec<f64> {
 
 struct Prior {
     rpm: f64,
+    rpm_sd: f64,
+    /// 방위각 사전 폭 (rad). 좌우(z)를 못 보는 옆 카메라에서만 유한하게
+    phi_sd: f64,
     kt: f64,
     kt_sd: f64,
 }
@@ -167,13 +170,17 @@ fn resid(ae: &SharedRe, p: &[f64; NP], scr: Screen, obs: &[[f64; 3]], sig: [f64;
     let m = sample(ae, p, scr, obs.len(), fdt);
     let mut r = Vec::with_capacity(obs.len() * 3 + 3);
     for (a, b) in m.iter().zip(obs) {
+        let a = project(*a);
         for c in 0..3 {
-            r.push((a[c] - b[c]) / sig[c]);
+            r.push(if b[c].is_finite() { (a[c] - b[c]) / sig[c] } else { 0.0 });
         }
     }
-    r.push((p[6] - pr.rpm) / 1500.0);
+    r.push((p[6] - pr.rpm) / pr.rpm_sd);
     r.push(p[7].to_degrees() / 20.0);
     r.push((p[8] - pr.kt) / pr.kt_sd.max(1e-6));
+    if pr.phi_sd.is_finite() {
+        r.push(p[5] / pr.phi_sd);
+    }
     r
 }
 
@@ -244,11 +251,14 @@ impl Rng {
 
 /// 충돌 전 프레임 앞부분 2차 맞춤으로 시작점
 fn initial_guess(obs: &[[f64; 3]], fdt: f64, rpm0: f64, kt: f64) -> [f64; NP] {
-    let n = obs.len().min(6);
     let mut co = [[0.0; 3]; 3];
     for c in 0..3 {
+        let ks: Vec<usize> = (0..obs.len()).filter(|&k| obs[k][c].is_finite()).take(6).collect();
+        if ks.len() < 3 {
+            continue; // 이 축은 관측 없음 (옆 카메라의 좌우 등): 0 으로 둔다
+        }
         let mut a = vec![vec![0.0; 4]; 3];
-        for k in 0..n {
+        for &k in &ks {
             let t = k as f64 * fdt;
             let b = [1.0, t, t * t];
             for i in 0..3 {
@@ -293,7 +303,7 @@ fn selfcal(ae: &SharedRe, scr: Screen) {
             let total = |kt: f64| -> f64 {
                 shots.iter().map(|obs| {
                     let g0 = initial_guess(obs, fdt, 0.0, kt);
-                    let pr = Prior { rpm: prior_rpm(g0[3] / 0.44704, g0[4].to_degrees()), kt, kt_sd: 1e-4 };
+                    let pr = Prior { rpm: prior_rpm(g0[3] / 0.44704, g0[4].to_degrees()), rpm_sd: 1500.0, phi_sd: f64::INFINITY, kt, kt_sd: 1e-4 };
                     let mut best = f64::INFINITY;
                     for r0 in [pr.rpm, 2500.0, 8000.0] {
                         best = best.min(fit(ae, initial_guess(obs, fdt, r0, kt), scr, obs, sig, fdt, &pr).1);
@@ -333,14 +343,20 @@ fn polyfit(ts: &[f64], ys: &[f64], deg: usize) -> Vec<f64> {
 }
 
 /// 닫힌 꼴 추정: 충돌 전·후 프레임을 따로 2차 맞춤 → 충돌 순간 접선 속도 차 → ω = -(Δv_t/k_t + v_t)/R.
-/// 반환 [볼스피드 m/s, 발사각, 방위각, rpm, 축]
-fn closed_form(obs: &[[f64; 3]], fdt: f64, wall: f64, kt: f64) -> [f64; 5] {
-    let k_last = (0..obs.len()).max_by(|&a, &b| obs[a][0].total_cmp(&obs[b][0])).unwrap();
+/// 반환 [볼스피드 m/s, 발사각, 방위각, rpm, 축, 반발계수 e]
+fn closed_form(obs: &[[f64; 3]], fdt: f64, wall: f64, kt: f64) -> [f64; 6] {
+    let k_last = (0..obs.len()).filter(|&k| obs[k][0].is_finite()).max_by(|&a, &b| obs[a][0].total_cmp(&obs[b][0])).unwrap();
     // 충돌 전: 0..=k_last-? (가장 앞 프레임은 이미 반동했을 수 있어 하나 덜어냄)
     let pre: Vec<usize> = (0..k_last.max(2)).collect();
     let post: Vec<usize> = (k_last + 1..obs.len()).collect();
     let t = |k: usize| k as f64 * fdt;
-    let fitc = |idx: &[usize], c: usize, deg: usize| polyfit(&idx.iter().map(|&k| t(k)).collect::<Vec<_>>(), &idx.iter().map(|&k| obs[k][c]).collect::<Vec<_>>(), deg.min(idx.len().saturating_sub(1)));
+    let fitc = |idx: &[usize], c: usize, deg: usize| -> Vec<f64> {
+        let idx: Vec<usize> = idx.iter().copied().filter(|&k| obs[k][c].is_finite()).collect();
+        if idx.len() < 2 {
+            return vec![0.0, 0.0];
+        }
+        polyfit(&idx.iter().map(|&k| t(k)).collect::<Vec<_>>(), &idx.iter().map(|&k| obs[k][c]).collect::<Vec<_>>(), deg.min(idx.len() - 1))
+    };
     let pd = if pre.len() >= 4 { 2 } else { 1 };
     let px: Vec<f64> = fitc(&pre, 0, pd);
     let py = fitc(&pre, 1, pd);
@@ -355,6 +371,7 @@ fn closed_form(obs: &[[f64; 3]], fdt: f64, wall: f64, kt: f64) -> [f64; 5] {
         th -= f / d;
     }
     let qd = if post.len() >= 4 { 2 } else { 1 };
+    let qx = fitc(&post, 0, qd);
     let qy = fitc(&post, 1, qd);
     let qz = fitc(&post, 2, qd);
     let (vy0, vz0) = (dv(&py, th), dv(&pz, th));
@@ -366,7 +383,8 @@ fn closed_form(obs: &[[f64; 3]], fdt: f64, wall: f64, kt: f64) -> [f64; 5] {
     let om = (wy * wy + wz * wz).sqrt();
     let (vx, vy, vz) = (dv(&px, 0.0), dv(&py, 0.0), dv(&pz, 0.0));
     let v = (vx * vx + vy * vy + vz * vz).sqrt();
-    [v, (vy / v).asin(), vz.atan2(vx), om * 60.0 / std::f64::consts::TAU, wy.atan2(wz)]
+    let e = (-dv(&qx, th) / dv(&px, th).max(1.0)).clamp(0.05, 0.95);
+    [v, (vy / v).asin(), vz.atan2(vx), om * 60.0 / std::f64::consts::TAU, wy.atan2(wz), e]
 }
 
 fn closed_study(ae: &SharedRe) {
@@ -401,7 +419,7 @@ fn closed_study(ae: &SharedRe) {
                 c1 += (carry(ae, &pc) - c_true).powi(2);
                 let t0 = std::time::Instant::now();
                 let g0 = initial_guess(&obs, fdt, 0.0, ktv);
-                let pr = Prior { rpm: prior_rpm(g0[3] / 0.44704, g0[4].to_degrees()), kt: ktv, kt_sd: 0.01 };
+                let pr = Prior { rpm: prior_rpm(g0[3] / 0.44704, g0[4].to_degrees()), rpm_sd: 1500.0, phi_sd: f64::INFINITY, kt: ktv, kt_sd: 0.01 };
                 // LM 시작점을 닫힌 꼴 값으로 (탐색 시작점 하나)
                 let mut st = initial_guess(&obs, fdt, cf[3].clamp(500.0, 14000.0), ktv);
                 st[9] = ev;
@@ -419,8 +437,125 @@ fn closed_study(ae: &SharedRe) {
     }
 }
 
+/// 옆 카메라 투영 [xc, yc, Z0, sgn]: 평면 밖으로 z 만큼 나온 점이 화면 평면에 비치는 위치
+static CAM: std::sync::OnceLock<[f64; 4]> = std::sync::OnceLock::new();
+#[inline]
+fn project(p: [f64; 3]) -> [f64; 3] {
+    match CAM.get() {
+        Some(c) => {
+            let s = c[2] / (c[2] + c[3] * p[2]);
+            [c[0] + (p[0] - c[0]) * s, c[1] + (p[1] - c[1]) * s, p[2]]
+        }
+        None => p,
+    }
+}
+
+fn read_csv(path: &str) -> (Vec<[f64; 3]>, f64) {
+    let rows: Vec<[f64; 4]> = std::fs::read_to_string(path).expect("CSV 읽기").lines()
+        .filter(|l| !l.trim_start().starts_with('#'))
+        .filter_map(|l| { let v: Vec<f64> = l.split(|c| c == ',' || c == ' ' || c == '\t').filter(|x| !x.is_empty()).filter_map(|x| x.parse().ok()).collect(); (v.len() >= 4).then(|| [v[0], v[1], v[2], v[3]]) })
+        .collect();
+    assert!(rows.len() >= 5, "프레임이 5개 이상 필요");
+    // "# cam xc yc Z0 sgn": 카메라 투영 (track_ball.py 가 씀)
+    if let Some(l) = std::fs::read_to_string(path).unwrap().lines().find(|l| l.starts_with("# cam")) {
+        let v: Vec<f64> = l[5..].split_whitespace().filter_map(|x| x.parse().ok()).collect();
+        if v.len() == 4 {
+            let _ = CAM.set([v[0], v[1], v[2], v[3]]);
+            eprintln!("카메라 투영 사용: 축 위치 ({:.3}, {:.3}) m, 거리 {:.3} m", v[0], v[1], v[2]);
+        }
+    }
+    let mut dts: Vec<f64> = rows.windows(2).map(|w| w[1][0] - w[0][0]).filter(|d| *d > 0.0).collect();
+    dts.sort_by(f64::total_cmp);
+    let fdt = dts[dts.len() / 2];
+    let n = ((rows.last().unwrap()[0] - rows[0][0]) / fdt).round() as usize + 1;
+    let mut obs = vec![[f64::NAN; 3]; n];
+    for r in &rows {
+        let k = ((r[0] - rows[0][0]) / fdt).round() as usize;
+        if k < n { obs[k] = [r[1], r[2], r[3]]; }
+    }
+    (obs, fdt)
+}
+
+fn arg(name: &str) -> Option<String> {
+    let a: Vec<String> = std::env::args().collect();
+    a.iter().position(|x| x == name).and_then(|i| a.get(i + 1).cloned())
+}
+
+/// 실제 프레임: 벽(스크린) 반동 역보정. --wall 공 출발점~벽 면 거리 m, --kt (기본 2/7), --kt-sd (기본 0.02),
+/// --sig mm (기본 5), --cam side|behind|diag, --throw (손으로 던진 보정 샷: 스핀 0 ± 300, k_t 자유)
+fn csv_mode(ae: &SharedRe, path: &str) {
+    let (obs, fdt) = read_csv(path);
+    let num = |n: &str, d: f64| arg(n).and_then(|v| v.parse::<f64>().ok()).unwrap_or(d);
+    let scr = Screen { dist: num("--wall", 3.0), mu: 0.5 };
+    let sg = num("--sig", 5.0) / 1000.0;
+    let sig = match arg("--cam").as_deref() { Some("behind") => [5.0 * sg, sg, sg], Some("diag") => [2.2 * sg, sg, 2.2 * sg], _ => [sg, sg, 5.0 * sg] };
+    let throw = std::env::args().any(|a| a == "--throw");
+    let (kt0, kt_sd) = if throw { (2.0 / 7.0, 1.0) } else { (num("--kt", 2.0 / 7.0), num("--kt-sd", 0.02)) };
+    let g0 = initial_guess(&obs, fdt, 0.0, kt0);
+    let pr = if throw { Prior { rpm: 0.0, rpm_sd: num("--throw-spin-sd", 300.0), phi_sd: f64::INFINITY, kt: kt0, kt_sd } } else { Prior { rpm: prior_rpm(g0[3] / 0.44704, g0[4].to_degrees()), rpm_sd: 1500.0, phi_sd: f64::INFINITY, kt: kt0, kt_sd } };
+    let mut pr = pr;
+    let z_seen = obs.iter().filter(|o| o[2].is_finite()).count();
+    if z_seen < 3 {
+        pr.phi_sd = 3f64.to_radians();
+        println!("좌우(z) 관측 없음: 방위각 0 ± 3°, 스핀축은 사전값(0 ± 20°)에 기댐");
+    }
+    let cf = closed_form(&obs, fdt, scr.dist - R, kt0);
+    let mut best = ([0.0; NP], f64::INFINITY);
+    // (스핀 시작값, k_t 시작값): 충돌이 매끄럽지 않아 LM 이 한 시작점에서 멈출 수 있어 여러 곳에서 출발
+    let starts: Vec<(f64, f64)> = if throw { vec![(0.0, 0.15), (0.0, 0.2857), (0.0, 0.40)] } else { vec![cf[3].clamp(500.0, 14000.0), pr.rpm, 2500.0, 8000.0].into_iter().map(|r| (r, kt0)).collect() };
+    for (r0, k0) in starts {
+        let mut st = initial_guess(&obs, fdt, r0, k0);
+        if !throw { st[7] = cf[4].clamp(-1.0, 1.0); }
+        st[9] = cf[5];
+        let f = fit(ae, st, scr, &obs, sig, fdt, &pr);
+        if f.1 < best.1 { best = f; }
+    }
+    let p = best.0;
+    if std::env::var("DEBUG").is_ok() {
+        let r = resid(ae, &p, scr, &obs, sig, fdt, &pr);
+        eprintln!("resid NaN {} / {}, 처음 10: {:?}, 끝 12: {:?}", r.iter().filter(|x| !x.is_finite()).count(), r.len(), &r[..10], &r[r.len()-12..]);
+    }
+    let nobs = obs.iter().filter(|o| o[0].is_finite()).count();
+    println!("프레임 {nobs}개 ({:.0} fps), 벽 {:.2} m, 카이제곱/자유도 {:.2}", 1.0 / fdt, scr.dist, best.1 / (3 * nobs).saturating_sub(NP).max(1) as f64);
+    println!("볼스피드 {:.1} mph, 발사각 {:.2}°, 방위각 {:.2}°", p[3] / 0.44704, p[4].to_degrees(), p[5].to_degrees());
+    println!("벽: k_t {:.4} (강체 0.2857), 반발계수 e {:.3}", p[8], p[9]);
+    if throw {
+        println!("보정 샷: 다음 샷부터 --kt {:.4} --kt-sd 0.01 로 쓰세요. 스핀(던진 공) {:.0} rpm", p[8], p[6]);
+    } else {
+        println!("닫힌 꼴 첫 값: 스핀 {:.0} rpm, 축 {:.1}°", cf[3], cf[4].to_degrees());
+        println!("스핀 {:.0} rpm, 스핀축 {:.1}°, 캐리 {:.1} yd", p[6], p[7].to_degrees(), carry(ae, &p));
+    }
+}
+
+/// 가짜 영상용 참 프레임: --synth OUT.csv --mph --deg --rpm --axis --fps --wall --after
+fn synth(ae: &SharedRe, out: &str) {
+    let num = |n: &str, d: f64| arg(n).and_then(|v| v.parse::<f64>().ok()).unwrap_or(d);
+    let fps = num("--fps", 240.0);
+    let scr = Screen { dist: num("--wall", 3.0), mu: 0.5 };
+    let truth = [0.0, 0.0, 0.0, num("--mph", 120.0) * 0.44704, num("--deg", 16.3).to_radians(), 0.0, num("--rpm", 7097.0), num("--axis", 8.0).to_radians(), num("--kt", 2.0 / 7.0), num("--e", 0.6)];
+    let fdt = 1.0 / fps;
+    let probe = sample(ae, &truth, scr, 2000, fdt);
+    let k_hit = probe.windows(2).position(|w| w[1][0] < w[0][0]).unwrap_or(10);
+    let n = k_hit + (num("--after", 0.2) * fps).round() as usize + 1;
+    let fr = sample(ae, &truth, scr, n, fdt);
+    let mut s = String::from("t,x,y,z\n");
+    for (k, p) in fr.iter().enumerate() {
+        s += &format!("{:.6},{:.6},{:.6},{:.6}\n", k as f64 * fdt, p[0], p[1], p[2]);
+    }
+    std::fs::write(out, s).unwrap();
+    println!("참값: 스핀 {} rpm, 축 {}°, 캐리 {:.1} yd, 충돌 프레임 {}", truth[6], num("--axis", 8.0), carry(ae, &truth), k_hit);
+}
+
 fn main() {
     let ae = field();
+    if let Some(out) = arg("--synth") {
+        synth(&ae, &out);
+        return;
+    }
+    if let Some(path) = arg("--csv") {
+        csv_mode(&ae, &path);
+        return;
+    }
     if std::env::args().any(|a| a == "--closed") {
         closed_study(&ae);
         return;
@@ -457,7 +592,7 @@ fn main() {
                         for _ in 0..mc {
                             let obs: Vec<[f64; 3]> = clean.iter().map(|p| [p[0] + sig[0] * rng.g(), p[1] + sig[1] * rng.g(), p[2] + sig[2] * rng.g()]).collect();
                             let g0 = initial_guess(&obs, fdt, 0.0, pr_kt);
-                            let pr = Prior { rpm: prior_rpm(g0[3] / 0.44704, g0[4].to_degrees()), kt: pr_kt, kt_sd: pr_sd };
+                            let pr = Prior { rpm: prior_rpm(g0[3] / 0.44704, g0[4].to_degrees()), rpm_sd: 1500.0, phi_sd: f64::INFINITY, kt: pr_kt, kt_sd: pr_sd };
                             let mut best = ([0.0; NP], f64::INFINITY);
                             for r0 in [pr.rpm, 2500.0, 8000.0] {
                                 let f = fit(&ae, initial_guess(&obs, fdt, r0, pr_kt), scr, &obs, sig, fdt, &pr);
