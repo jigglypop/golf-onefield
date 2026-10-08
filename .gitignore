@@ -1,0 +1,7 @@
+# 빌드 산출물
+flightbench/target/
+__pycache__/
+*.pyc
+
+# 재생성 가능한 펼친 장 (python -B run_higgs.py 로 다시 만든다)
+unfolded_field.npz
