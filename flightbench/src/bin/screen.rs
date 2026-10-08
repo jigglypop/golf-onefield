@@ -16,6 +16,11 @@
 //!   k_t 자가 보정 (--selfcal): 샷 여러 개가 k_t 를 공유한다고 두고 맞추면 5샷에 ±0.006, 40샷에 ±0.0023 —
 //!   '보정함'(±0.01)보다 좋다. 단, 참 스핀이 투어 회귀를 평균으로 둔다는 가정에 기댄다(사용자 스핀이 체계적으로 다르면 치우침).
 //!
+//! 닫힌 꼴 (--closed): ω = -(Δv_t/k_t + v_t)/R 를 충돌 전·후 2차 맞춤 속도로 바로 계산 (5–16 µs/샷).
+//!   단독으로는 노이즈를 미분하는 셈이라 나쁘다 (60 fps 드라이버 캐리 17.9 yd, 7번 11.4 yd).
+//!   닫힌 꼴을 시작점으로 LM 한 번 (2–9 ms/샷, 격자 탐색 없음): 60 fps 드라이버 5.9 yd·7번 1.4·웨지 0.7,
+//!   240 fps 드라이버 3.1·7번 0.7·웨지 0.35 yd. 격자 66만 후보가 필요 없어진다.
+//!
 //! cargo run --release --bin screen [몬테카를로 횟수]     AFTER=0.05,0.1,0.15 로 반동 관측 시간 바꾸기, --selfcal
 
 use flightbench::engine::{dimless, run, Aero, SharedRe, U_MS, YD};
@@ -311,8 +316,112 @@ fn selfcal(ae: &SharedRe, scr: Screen) {
     }
 }
 
+/// 다항식 최소제곱 (차수 deg), t 는 기준 시각에서 뺀 값
+fn polyfit(ts: &[f64], ys: &[f64], deg: usize) -> Vec<f64> {
+    let m = deg + 1;
+    let mut a = vec![vec![0.0; m + 1]; m];
+    for (t, y) in ts.iter().zip(ys) {
+        let b: Vec<f64> = (0..m).map(|k| t.powi(k as i32)).collect();
+        for i in 0..m {
+            for j in 0..m {
+                a[i][j] += b[i] * b[j];
+            }
+            a[i][m] += b[i] * y;
+        }
+    }
+    solve(a)
+}
+
+/// 닫힌 꼴 추정: 충돌 전·후 프레임을 따로 2차 맞춤 → 충돌 순간 접선 속도 차 → ω = -(Δv_t/k_t + v_t)/R.
+/// 반환 [볼스피드 m/s, 발사각, 방위각, rpm, 축]
+fn closed_form(obs: &[[f64; 3]], fdt: f64, wall: f64, kt: f64) -> [f64; 5] {
+    let k_last = (0..obs.len()).max_by(|&a, &b| obs[a][0].total_cmp(&obs[b][0])).unwrap();
+    // 충돌 전: 0..=k_last-? (가장 앞 프레임은 이미 반동했을 수 있어 하나 덜어냄)
+    let pre: Vec<usize> = (0..k_last.max(2)).collect();
+    let post: Vec<usize> = (k_last + 1..obs.len()).collect();
+    let t = |k: usize| k as f64 * fdt;
+    let fitc = |idx: &[usize], c: usize, deg: usize| polyfit(&idx.iter().map(|&k| t(k)).collect::<Vec<_>>(), &idx.iter().map(|&k| obs[k][c]).collect::<Vec<_>>(), deg.min(idx.len().saturating_sub(1)));
+    let pd = if pre.len() >= 4 { 2 } else { 1 };
+    let px: Vec<f64> = fitc(&pre, 0, pd);
+    let py = fitc(&pre, 1, pd);
+    let pz = fitc(&pre, 2, pd);
+    let ev = |c: &Vec<f64>, tt: f64| c.iter().enumerate().map(|(k, a)| a * tt.powi(k as i32)).sum::<f64>();
+    let dv = |c: &Vec<f64>, tt: f64| c.iter().enumerate().skip(1).map(|(k, a)| k as f64 * a * tt.powi(k as i32 - 1)).sum::<f64>();
+    // 충돌 시각: x(t) = wall 의 근 (뉴턴)
+    let mut th = t(k_last);
+    for _ in 0..20 {
+        let f = ev(&px, th) - wall;
+        let d = dv(&px, th).max(1.0);
+        th -= f / d;
+    }
+    let qd = if post.len() >= 4 { 2 } else { 1 };
+    let qy = fitc(&post, 1, qd);
+    let qz = fitc(&post, 2, qd);
+    let (vy0, vz0) = (dv(&py, th), dv(&pz, th));
+    let (vy1, vz1) = (dv(&qy, th), dv(&qz, th));
+    let (dvy, dvz) = (vy1 - vy0, vz1 - vz0);
+    // Δv_y = -k_t (v_y + R ω_z),  Δv_z = -k_t (v_z - R ω_y)
+    let wz = -(dvy / kt + vy0) / R;
+    let wy = (dvz / kt + vz0) / R;
+    let om = (wy * wy + wz * wz).sqrt();
+    let (vx, vy, vz) = (dv(&px, 0.0), dv(&py, 0.0), dv(&pz, 0.0));
+    let v = (vx * vx + vy * vy + vz * vz).sqrt();
+    [v, (vy / v).asin(), vz.atan2(vx), om * 60.0 / std::f64::consts::TAU, wy.atan2(wz)]
+}
+
+fn closed_study(ae: &SharedRe) {
+    let scr = Screen { dist: 3.0, mu: 0.5 };
+    let mc = 40;
+    let shots = [("드라이버", 167.0, 10.9, 2686.0), ("7번", 120.0, 16.3, 7097.0), ("아마7번", 100.0, 18.0, 6000.0), ("웨지", 86.0, 25.7, 8403.0)];
+    println!("닫힌 꼴 스핀 (탐색 없음) 대 LM 맞춤. 대각 카메라 σ 5 mm, 반동 0.2 s, k_t 보정(0.20). 몬테카를로 {mc}회");
+    println!("{:<8} {:>4} | {:>8} {:>6} {:>7} {:>8} | {:>8} {:>6} {:>7} {:>8}", "샷", "fps", "닫힌rpm", "축deg", "캐리yd", "µs/샷", "LM rpm", "축deg", "캐리yd", "ms/샷");
+    for fps in [60.0f64, 120.0, 240.0] {
+        let fdt = 1.0 / fps;
+        let sig = [2.2 * 0.005, 0.005, 2.2 * 0.005];
+        for (name, mph, deg, rpm) in shots {
+            let truth = [0.0, 0.02, 0.0, mph * 0.44704, (deg as f64).to_radians(), 2f64.to_radians(), rpm, 8f64.to_radians(), 0.20, 0.30];
+            let c_true = carry(ae, &truth);
+            let probe = sample(ae, &truth, scr, 400, fdt);
+            let k_hit = probe.windows(2).position(|w| w[1][0] < w[0][0]).unwrap_or(10);
+            let n = k_hit + (0.2 * fps).round() as usize + 1;
+            let clean = sample(ae, &truth, scr, n, fdt);
+            let mut rng = Rng(0xBEEF ^ (fps as u64) << 12);
+            let (mut e1, mut a1, mut c1, mut e2, mut a2, mut c2) = (0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
+            let (mut t1, mut t2) = (0.0, 0.0);
+            for _ in 0..mc {
+                let obs: Vec<[f64; 3]> = clean.iter().map(|p| [p[0] + sig[0] * rng.g(), p[1] + sig[1] * rng.g(), p[2] + sig[2] * rng.g()]).collect();
+                let t0 = std::time::Instant::now();
+                let cf = closed_form(&obs, fdt, scr.dist - R, 0.20);
+                t1 += t0.elapsed().as_secs_f64();
+                let pc = [0.0, 0.02, 0.0, cf[0], cf[1], cf[2], cf[3], cf[4], 0.20, 0.30];
+                e1 += (cf[3] - rpm).powi(2);
+                a1 += (cf[4] - truth[7]).to_degrees().powi(2);
+                c1 += (carry(ae, &pc) - c_true).powi(2);
+                let t0 = std::time::Instant::now();
+                let g0 = initial_guess(&obs, fdt, 0.0, 0.20);
+                let pr = Prior { rpm: prior_rpm(g0[3] / 0.44704, g0[4].to_degrees()), kt: 0.20, kt_sd: 0.01 };
+                // LM 시작점을 닫힌 꼴 값으로 (탐색 시작점 하나)
+                let mut st = initial_guess(&obs, fdt, cf[3].clamp(500.0, 14000.0), 0.20);
+                st[7] = cf[4].clamp(-1.0, 1.0);
+                let (p, _) = fit(ae, st, scr, &obs, sig, fdt, &pr);
+                t2 += t0.elapsed().as_secs_f64();
+                e2 += (p[6] - rpm).powi(2);
+                a2 += (p[7] - truth[7]).to_degrees().powi(2);
+                c2 += (carry(ae, &p) - c_true).powi(2);
+            }
+            let k = mc as f64;
+            println!("{:<8} {:>4.0} | {:>8.0} {:>6.2} {:>7.2} {:>8.1} | {:>8.0} {:>6.2} {:>7.2} {:>8.1}", name, fps,
+                (e1 / k).sqrt(), (a1 / k).sqrt(), (c1 / k).sqrt(), t1 / k * 1e6, (e2 / k).sqrt(), (a2 / k).sqrt(), (c2 / k).sqrt(), t2 / k * 1e3);
+        }
+    }
+}
+
 fn main() {
     let ae = field();
+    if std::env::args().any(|a| a == "--closed") {
+        closed_study(&ae);
+        return;
+    }
     if std::env::args().any(|a| a == "--selfcal") {
         selfcal(&ae, Screen { dist: 3.0, mu: 0.5 });
         return;
