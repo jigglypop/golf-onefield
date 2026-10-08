@@ -184,6 +184,54 @@ TrackMan 투어 평균표 전체(PGA 12행: 드라이버~PW, LPGA 11행)에는 �
   $C_D$ 의 $e/|u|$ 항, 스핀 감쇠 자유화(β→0 으로 가며 개선 없음), 레이놀즈 계단 $e/(1+(|u|/u_0)^2)$.
   $e/|u|$ 항과 계단은 훈련 착지각을 2° 로 줄이지만 보류 캐리가 LPGA 9–10 yd, USGA 12–13 yd 로 무너진다.
 
+### 빠른 시험대: 항을 글로 바꾸고 1초 판정 (`flightbench/models.txt`, `src/bin/quick.rs`)
+
+`models.txt` 에 항을 수식으로 적으면 다시 컴파일하지 않고 PGA 세 양 보정 → LPGA·USGA 판정까지 모형당 약 0.1 s 에 끝난다.
+
+```text
+[H2rat]
+kd = v*u + d*w                 # |u| C_D   (변수 u, w, S, Re 와 매개변수)
+kl = c*w*u/(u + l*w)           # |u| C_L
+v = 0.24 0.05 0.6              # 시작 하한 상한 (값 하나면 고정)
+```
+
+```sh
+cd flightbench
+cargo run --profile quick --bin quick              # 모든 모형 + 기존 엔진, 약 1.5 s
+cargo run --profile quick --bin quick -- H2rat     # 고른 모형만
+cargo run --profile quick --bin quick -- --engines # 기존 엔진 대비 속도·수치 정확도
+```
+
+10분 걸리던 `calib` 와 같은 숫자가 나온다(H2 USGA 9.91 대 9.91). 줄인 곳: 궤적은 τ 걸음 RK4 약 56걸음(오차 1.7e-6 yd),
+USGA 분포 평균은 몬테카를로 20만 대신 가우스-에르미트 343점(더 촘촘한 구적 대비 RMS 0.10 yd), 빌드는 `quick` 프로필(약 3 s).
+
+### 기존 엔진 대비 (`src/openfairway.rs`)
+
+비교 기준은 공개 골프 물리 라이브러리 [OpenFairway](https://github.com/digitalhand/openfairway)(Godot·C#, MIT)의 비행 물리를 러스트로 옮긴 것이다.
+풍동 다항식 $C_D(Re)$, $C_L(Re,S)$ 에 보정 매개변수 55개와 발사 영역별 배율 31칸이 붙고, 120 Hz 반암시 오일러로 적분한다.
+이식은 원본 회귀 시험 16개 중 14개의 창(비교값 ±2 yd) 안에 들고, 벗어난 둘도 1.08 yd 이내다(C# 을 직접 돌리지는 못했다).
+
+| 같은 2000샷, 1코어 | 샷당 | 적분 오차 최대 (자기 수렴해 대비) |
+|---|---|---|
+| OpenFairway 120 Hz (원본 설정) | 64.7 µs | 0.99 yd |
+| OpenFairway 1000 Hz | 497 µs | 0.12 yd |
+| **장 하나 H2 빠른 엔진** | **0.185 µs** | **0.00028 yd** |
+
+속도 350배, 적분 오차 1/3,500. 기존 엔진은 러스트 이식으로 잰 값이라 원본 C# 보다 유리하게 잡혔다.
+
+자료 대비 정확도 (RMSE 캐리 yd / 높이 yd / 착지 °):
+
+| 모형 | 매개변수 | LPGA 보류 | USGA 캐리 (전체/아마) |
+|---|---|---|---|
+| H2 | 4 | 3.87 / 1.63 / 4.35 | 9.91 / 7.49 |
+| H2rat (양력 포화를 유리식으로) | 4 | 3.83 / **1.45** / 4.40 | 9.45 / 7.50 |
+| B4 | 4 | 3.70 / 1.49 / 4.58 | 9.00 / 7.58 |
+| OpenFairway 그대로 | (55 + 31칸) | 6.09 / 3.31 / 5.04 | 9.31 / 7.61 |
+| OpenFairway + 같은 PGA 로 배율 2개 재맞춤 | 2 | **3.42** / 2.98 / 5.30 | **8.06** / **5.49** |
+
+같은 자료로 다시 맞추면 캐리(특히 느린 아마추어 공)는 기존 엔진이, 궤적 꼴(높이·착지각)은 장 하나가 낫다.
+기존 엔진의 레이놀즈 수 의존 항력이 느린 공에서 효과가 있다는 단서지만, 같은 방향의 항(H2re)을 우리 장에 넣으면 LPGA 보류가 무너진다.
+
 ### 지면 접촉 (`ground.py`) — 검증 실패
 
 Penner 강체 바운스(브리스톨 적합 계수) + 미끄럼 + 구름 저항 1매개. USGA 런(총거리 − 캐리)에서 모든 조합이
@@ -230,7 +278,9 @@ Penner 강체 바운스(브리스톨 적합 계수) + 미끄럼 + 구름 저항 
 | `refs_models.csv`, `export_refs_models.py` | 러스트 H2·B4·F3 일치 검사용 파이썬 기준값 (33행)과 생성 스크립트 |
 | `flightbench/src/engine.rs` | 러스트 엔진 라이브러리: H2·B4·F3, f64 기준 적분기, f32×16 빠른 엔진, LM, USGA 분포 평균, 모드 장 |
 | `flightbench/src/bin/h2.rs` | 속도·수치 정확도·통계 정확도 측정 |
-| `flightbench/src/bin/calib.rs` | 투어 평균표 세 양 보정과 보류 판정 |
+| `flightbench/src/bin/calib.rs` | 투어 평균표 세 양 보정과 보류 판정 (몬테카를로, 느린 교차 검산용) |
+| `flightbench/models.txt`, `src/bin/quick.rs`, `src/harness.rs`, `src/expr.rs` | 빠른 시험대: 수식으로 적은 항, LM 보정, 가우스-에르미트 USGA |
+| `flightbench/src/openfairway.rs` | 기존 엔진 OpenFairway 비행 물리 이식 (MIT) — 비교 기준 |
 | `flightbench/` | 러스트 엔진과 병목 측정 |
 
 각 스크립트의 결과는 파일 상단 docstring/주석에 기록되어 있다.
@@ -252,4 +302,5 @@ cd flightbench && cargo run --release
 cargo run --release --bin field4
 cargo run --release --bin h2      # 약 35 초
 cargo run --release --bin calib   # 약 10 분 (행당 20만 표본), 인수로 표본 수 지정
+cargo run --profile quick --bin quick   # 약 1.5 초, 항은 models.txt
 ```

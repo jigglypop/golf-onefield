@@ -1,0 +1,36 @@
+# 빠른 시험대 모형 목록:  cargo run --profile quick --bin quick [-- 모형이름,모형이름]
+#
+# 변수: u = |u| (무차원 속도, 1 = 22.9 m/s), w = 무차원 스핀 (R ω / 22.9 m/s), S = w/u (스핀 비), Re = 레이놀즈 수
+# kd = |u| C_D,  kl = |u| C_L.  함수: sqrt exp ln abs tanh atan min max pow, 연산 + - * / ^
+# 매개변수 줄: "이름 = 시작 하한 상한" (맞춤) 또는 "이름 = 값" (고정). 이름이 beta 면 스핀 감쇠 dw/dt = -beta w u.
+# 훈련은 PGA 12행의 캐리·최고 높이·착지각, 판정은 LPGA 11행 세 양과 USGA 20행 분포 평균 캐리.
+
+[H2]                       # 힉스 이중항 장: 항력 = 배경 + 스핀, 양력 = 반경 노름 포화
+kd = v*u + d*w
+kl = c*w*u/sqrt(u^2 + (l*w)^2)
+v = 0.24 0.05 0.6
+d = 0.25 -1 2
+c = 2.4 0 20
+l = 7 0 80
+
+[H2rat]                    # H2 의 양력 포화를 sqrt 대신 유리식으로 (OpenFairway 의 C_L 꼴). 나눗셈 하나
+kd = v*u + d*w
+kl = c*w*u/(u + l*w)
+v = 0.24 0.05 0.6
+d = 0.25 -1 2
+c = 3.8 0 20
+l = 9 0 80
+
+[B4]                       # 분리 법칙 (문헌 Smits & Smith 꼴): C_D = d0 + d1 S, C_L = l0 S^p
+kd = d0*u + d1*w
+kl = l0*u*pow(S, p)
+d0 = 0.23 0.05 0.6
+d1 = 0.3 -1 2
+l0 = 0.47 0.01 2
+p = 0.37 0.05 2
+
+[Z0]                       # 매개변수 0개: 각도 π/4 잠금, vev = π/8, h = vev/√2
+kd = (vev*u + h*w)/sqrt(2)
+kl = (vev*u + h*w)/sqrt(2)
+vev = 0.39269908169872414
+h = 0.2776801836348979
