@@ -379,7 +379,9 @@ fn closed_study(ae: &SharedRe) {
         let fdt = 1.0 / fps;
         let sig = [2.2 * 0.005, 0.005, 2.2 * 0.005];
         for (name, mph, deg, rpm) in shots {
-            let truth = [0.0, 0.02, 0.0, mph * 0.44704, (deg as f64).to_radians(), 2f64.to_radians(), rpm, 8f64.to_radians(), 0.20, 0.30];
+            let wall = std::env::var("WALL").is_ok();
+            let (ktv, ev) = if wall { (2.0 / 7.0, 0.6) } else { (0.20, 0.30) };
+            let truth = [0.0, 0.02, 0.0, mph * 0.44704, (deg as f64).to_radians(), 2f64.to_radians(), rpm, 8f64.to_radians(), ktv, ev];
             let c_true = carry(ae, &truth);
             let probe = sample(ae, &truth, scr, 400, fdt);
             let k_hit = probe.windows(2).position(|w| w[1][0] < w[0][0]).unwrap_or(10);
@@ -391,17 +393,18 @@ fn closed_study(ae: &SharedRe) {
             for _ in 0..mc {
                 let obs: Vec<[f64; 3]> = clean.iter().map(|p| [p[0] + sig[0] * rng.g(), p[1] + sig[1] * rng.g(), p[2] + sig[2] * rng.g()]).collect();
                 let t0 = std::time::Instant::now();
-                let cf = closed_form(&obs, fdt, scr.dist - R, 0.20);
+                let cf = closed_form(&obs, fdt, scr.dist - R, ktv);
                 t1 += t0.elapsed().as_secs_f64();
-                let pc = [0.0, 0.02, 0.0, cf[0], cf[1], cf[2], cf[3], cf[4], 0.20, 0.30];
+                let pc = [0.0, 0.02, 0.0, cf[0], cf[1], cf[2], cf[3], cf[4], ktv, ev];
                 e1 += (cf[3] - rpm).powi(2);
                 a1 += (cf[4] - truth[7]).to_degrees().powi(2);
                 c1 += (carry(ae, &pc) - c_true).powi(2);
                 let t0 = std::time::Instant::now();
-                let g0 = initial_guess(&obs, fdt, 0.0, 0.20);
-                let pr = Prior { rpm: prior_rpm(g0[3] / 0.44704, g0[4].to_degrees()), kt: 0.20, kt_sd: 0.01 };
+                let g0 = initial_guess(&obs, fdt, 0.0, ktv);
+                let pr = Prior { rpm: prior_rpm(g0[3] / 0.44704, g0[4].to_degrees()), kt: ktv, kt_sd: 0.01 };
                 // LM 시작점을 닫힌 꼴 값으로 (탐색 시작점 하나)
-                let mut st = initial_guess(&obs, fdt, cf[3].clamp(500.0, 14000.0), 0.20);
+                let mut st = initial_guess(&obs, fdt, cf[3].clamp(500.0, 14000.0), ktv);
+                st[9] = ev;
                 st[7] = cf[4].clamp(-1.0, 1.0);
                 let (p, _) = fit(ae, st, scr, &obs, sig, fdt, &pr);
                 t2 += t0.elapsed().as_secs_f64();
