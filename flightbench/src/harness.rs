@@ -259,7 +259,8 @@ impl Tunable for Model {
 }
 
 /// 상자 제약 레벤버그-마쿼트. 자유 매개변수만 움직인다. 반환: 비용(잔차 제곱합)
-pub fn fit<T: Tunable>(m: &mut T, rows: &[[f64; 6]], all3: bool) -> f64 {
+/// w: 캐리·높이·착지각 잔차 가중치 (0 이면 빼기)
+pub fn fit<T: Tunable>(m: &mut T, rows: &[[f64; 6]], w: [f64; 3]) -> f64 {
     let mut p = m.get();
     let (lo, hi) = m.bounds();
     let n = p.len();
@@ -270,10 +271,10 @@ pub fn fit<T: Tunable>(m: &mut T, rows: &[[f64; 6]], all3: bool) -> f64 {
         let mut out = Vec::with_capacity(rows.len() * 3);
         for r in rows {
             let o = m.obs(r[0], r[1], r[2]);
-            out.push(o[0] - r[3]);
-            if all3 {
-                out.push(o[1] - r[4]);
-                out.push(o[2] - r[5]);
+            for c in 0..3 {
+                if w[c] > 0.0 {
+                    out.push(w[c] * (o[c] - r[3 + c]));
+                }
             }
         }
         out.iter().map(|x| if x.is_finite() { *x } else { 1e3 }).collect()
@@ -410,4 +411,99 @@ mod tests {
             assert!((m(0) - 1.0).abs() < 1e-12 && m(1).abs() < 1e-12 && (m(2) - 1.0).abs() < 1e-12 && (m(4) - 3.0).abs() < 1e-10, "n={n}");
         }
     }
+}
+
+/// 3차원 비행 (스핀축 기울기 포함): (캐리 yd = 처음 수평 방향으로의 거리, 최고 높이 yd)
+pub trait Flight3 {
+    fn obs3(&self, mph: f64, deg: f64, rpm: f64, axis_deg: f64) -> [f64; 2];
+}
+
+impl Model {
+    #[inline]
+    fn f3(&self, vars: &mut [f64], s: &[f64; 7], oy: f64, oz: f64) -> [f64; 7] {
+        let sp = (s[3] * s[3] + s[4] * s[4] + s[5] * s[5]).sqrt();
+        vars[0] = sp;
+        vars[1] = s[6];
+        vars[2] = s[6] / sp;
+        vars[3] = sp * RE_PER_U;
+        let (kd, kl) = (self.kd.eval(vars), self.kl.eval(vars));
+        let beta = self.beta_idx.map(|i| vars[4 + i]).unwrap_or(0.06);
+        let g = 1.0 / sp.sqrt();
+        let (cx, cy, cz) = (oy * s[5] - oz * s[4], oz * s[3], -oy * s[3]);
+        [s[3] * g, s[4] * g, s[5] * g, (-kd * s[3] + kl * cx) * g, (-kd * s[4] + kl * cy - 1.0) * g, (-kd * s[5] + kl * cz) * g, -beta * s[6] * sp * g]
+    }
+}
+
+impl Flight3 for Model {
+    fn obs3(&self, mph: f64, deg: f64, rpm: f64, axis_deg: f64) -> [f64; 2] {
+        let [v0, th, s0] = dimless(mph, deg, rpm);
+        let (oy, oz) = (axis_deg.to_radians().sin(), axis_deg.to_radians().cos());
+        let mut vars = vec![0.0; 4 + self.p.len()];
+        vars[4..].copy_from_slice(&self.p);
+        let h = self.h;
+        let mut s = [0.0, 0.0, 0.0, v0 * th.cos(), v0 * th.sin(), 0.0, s0 * v0];
+        let mut k1 = self.f3(&mut vars, &s, oy, oz);
+        let mut apex = 0.0f64;
+        for _ in 0..(12.0 / h) as usize {
+            let st = |k: &[f64; 7], c: f64| -> [f64; 7] { std::array::from_fn(|i| s[i] + c * k[i]) };
+            let k2 = self.f3(&mut vars, &st(&k1, 0.5 * h), oy, oz);
+            let k3 = self.f3(&mut vars, &st(&k2, 0.5 * h), oy, oz);
+            let k4 = self.f3(&mut vars, &st(&k3, h), oy, oz);
+            let n: [f64; 7] = std::array::from_fn(|i| s[i] + h / 6.0 * (k1[i] + 2.0 * k2[i] + 2.0 * k3[i] + k4[i]));
+            let kn = self.f3(&mut vars, &n, oy, oz);
+            let (y0, y1, m0, m1) = (s[1], n[1], k1[1] * h, kn[1] * h);
+            if k1[1] > 0.0 && kn[1] <= 0.0 {
+                let a = 6.0 * y0 + 3.0 * m0 - 6.0 * y1 + 3.0 * m1;
+                let b = -6.0 * y0 - 4.0 * m0 + 6.0 * y1 - 2.0 * m1;
+                let t = if a.abs() < 1e-14 { -m0 / b } else {
+                    let d = (b * b - 4.0 * a * m0).max(0.0).sqrt();
+                    let (r1, r2) = ((-b - d) / (2.0 * a), (-b + d) / (2.0 * a));
+                    if (0.0..=1.0).contains(&r1) { r1 } else { r2 }
+                }
+                .clamp(0.0, 1.0);
+                let hh = herm(t);
+                apex = apex.max(hh[0] * y0 + hh[1] * m0 + hh[2] * y1 + hh[3] * m1);
+            }
+            if n[1] < 0.0 && s[1] >= 0.0 {
+                let mut t = if y0 <= 0.0 { 1.0 } else { y0 / (y0 - y1) };
+                for _ in 0..4 {
+                    let hh = herm(t);
+                    let f = hh[0] * y0 + hh[1] * m0 + hh[2] * y1 + hh[3] * m1;
+                    let t2 = t * t;
+                    let df = (6.0 * t2 - 6.0 * t) * (y0 - y1) + (3.0 * t2 - 4.0 * t + 1.0) * m0 + (3.0 * t2 - 2.0 * t) * m1;
+                    t = (t - f / df).clamp(0.0, 1.0);
+                }
+                let hh = herm(t);
+                let x = hh[0] * s[0] + hh[1] * k1[0] * h + hh[2] * n[0] + hh[3] * kn[0] * h;
+                return [x * YD, apex * YD];
+            }
+            s = n;
+            k1 = kn;
+        }
+        [f64::NAN; 2]
+    }
+}
+
+/// FlightScope 계산값 175샷: (mph, 발사각, 총 스핀, 스핀축, 캐리 yd, 최고 높이 ft)
+pub fn load_fs(path: &str) -> Vec<[f64; 6]> {
+    std::fs::read_to_string(path)
+        .map(|t| {
+            t.lines()
+                .filter(|l| !l.starts_with('#') && !l.starts_with("speed"))
+                .filter_map(|l| {
+                    let v: Vec<f64> = l.split(',').filter_map(|x| x.trim().parse().ok()).collect();
+                    (v.len() == 6).then(|| [v[0], v[1], v[2], v[3], v[4], v[5]])
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// FS 자료 채점: [캐리 RMSE 전체, 느린 공(<80 mph), 중간(80–110), 빠른(>110), 최고 높이 RMSE yd, 캐리 평균 부호 오차]
+pub fn score_fs<F: Flight3 + ?Sized>(m: &F, fs: &[[f64; 6]]) -> [f64; 6] {
+    let o: Vec<[f64; 2]> = fs.iter().map(|r| m.obs3(r[0], r[1], r[2], r[3])).collect();
+    let ec: Vec<f64> = o.iter().zip(fs).map(|(o, r)| o[0] - r[4]).collect();
+    let ea: Vec<f64> = o.iter().zip(fs).map(|(o, r)| o[1] - r[5] / 3.0).collect();
+    let bin = |lo: f64, hi: f64| rmse(&fs.iter().zip(&ec).filter(|(r, _)| r[0] >= lo && r[0] < hi).map(|(_, e)| *e).collect::<Vec<_>>());
+    [rmse(&ec), bin(0.0, 80.0), bin(80.0, 110.0), bin(110.0, 1e9), rmse(&ea), ec.iter().sum::<f64>() / ec.len() as f64]
 }

@@ -57,6 +57,23 @@ impl Aero for H2 {
     }
 }
 
+/// 공유 포화 장: 스핀 항력과 양력이 같은 포화 r = S/(1 + l S) 를 쓴다.
+///   C_D = v + d r,  C_L = c r,   |u| r = w |u| / (|u| + l w)  (나눗셈 하나)
+#[derive(Clone, Copy, Debug)]
+pub struct Shared {
+    pub v: f64,
+    pub d: f64,
+    pub c: f64,
+    pub l: f64,
+}
+impl Aero for Shared {
+    #[inline(always)]
+    fn kk(&self, sp: f64, w: f64) -> (f64, f64) {
+        let r = w * sp / (sp + self.l * w);
+        (self.v * sp + self.d * r, self.c * r)
+    }
+}
+
 #[derive(Clone, Copy)]
 pub struct B4 {
     pub d0: f64,
@@ -236,6 +253,11 @@ pub mod simd {
         pub fn fms(a: F, b: F, c: F) -> F {
             F(unsafe { _mm512_fmsub_ps(a.0, b.0, c.0) })
         }
+        /// 1/x 근사 (상대오차 2^-14)
+        #[inline(always)]
+        pub fn rcp14(self) -> F {
+            F(unsafe { _mm512_rcp14_ps(self.0) })
+        }
         /// 1/sqrt(x) 근사 (상대오차 2^-14). 걸음 재매개에만 쓴다: 그 값이 틀려도 궤적은 같은 곡선이다.
         #[inline(always)]
         pub fn rsqrt14(self) -> F {
@@ -302,6 +324,23 @@ impl FastAero for H2 {
         let sp = sqrt_nr(q);
         let r2 = F::fma(p[3] * w, w, q).rsqrt();
         (sp, F::fma(p[0], sp, F::fma(p[1], w, p[4])), p[2] * w * sp * r2)
+    }
+}
+
+impl FastAero for Shared {
+    type P = [F; 4];
+    fn prep(&self) -> [F; 4] {
+        [self.v, self.d, self.c, self.l].map(|x| F::splat(x as f32))
+    }
+    #[inline(always)]
+    fn kk(p: &[F; 4], q: F, w: F) -> (F, F, F) {
+        let sp = sqrt_nr(q);
+        // r = w sp / (sp + l w): 역수는 rcp14 + 뉴턴 1회
+        let den = F::fma(p[3], w, sp);
+        let r0 = den.rcp14();
+        let inv = r0 * F::fnma(den, r0, F::splat(2.0));
+        let r = w * sp * inv;
+        (sp, F::fma(p[0], sp, p[1] * r), p[2] * r)
     }
 }
 

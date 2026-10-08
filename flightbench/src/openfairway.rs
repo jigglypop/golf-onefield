@@ -360,3 +360,15 @@ impl crate::harness::Tunable for OpenFairway {
         (vec![0.3, 0.3], vec![3.0, 3.0])
     }
 }
+
+impl crate::harness::Flight3 for OpenFairway {
+    fn obs3(&self, mph: f64, deg: f64, rpm: f64, axis_deg: f64) -> [f64; 2] {
+        let a = axis_deg.to_radians();
+        let s = Shot { mph, vla: deg, hla: 0.0, back: rpm * a.cos(), side: rpm * a.sin(), total: rpm };
+        let o = match self.hz {
+            Some(hz) => fly_original_mul(&s, hz, self.mul),
+            None => fly_converged(&s, 1e-3),
+        };
+        [o[0], o[1]]
+    }
+}

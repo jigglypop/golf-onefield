@@ -27,19 +27,34 @@
 //!   궤적 꼴(높이 1.5 대 3.0 yd, 착지각 4.4 대 5.3°)은 장 하나가 낫다. 기존 엔진의 레이놀즈 수 의존 항력이
 //!   느린 공(아마추어)에서 효과가 있다는 뜻이지만, 우리 장에 같은 방향의 항(H2re)을 넣으면 LPGA 가 무너진다.
 //!
+//! 실측·상용 엔진 판정 추가 (같은 날 뒤): FS = FlightScope Trajectory Optimizer 계산값 175샷 (OpenFairway 가 보정에 쓴 자료).
+//!   후보 11개 꼴(models_tried.txt)을 같은 프로토콜로 시험해 '공유 포화 장'을 골랐다:
+//!     C_D = v + d r,  C_L = c r,  r = S/(1 + l S)      (매개변수 4, 나눗셈 하나)
+//!                 PGA 훈련            LPGA 보류          USGA 전체/프로/아마      FS 캐리/느림/높이
+//!   공유   4매  2.05 2.55 4.06   3.61 1.40 4.17   8.50 12.69 7.07     2.81 2.82 1.26
+//!   OF+2   2매  5.77 3.60 4.91   3.42 2.98 5.30   8.06 14.29 5.49     4.16 2.94 1.86
+//!   OF     원본  9.82 4.18 7.44   6.09 3.31 5.04   9.31 14.21 7.61     2.30 2.00 1.67  (FS 는 OF 의 훈련 자료)
+//!   이기는 곳: 높이·착지각 전부, USGA 프로, FS(같은 조건의 OF+2 대비, 그리고 FS 로 맞춘 OF 보다 높이가 정확)
+//!   지는 곳: LPGA 캐리 0.19 yd, USGA 아마추어 1.6 yd. 느린 공 항력 상승 항(Rcr)은 USGA 아마추어를 3.5 yd 로
+//!   줄이지만 FS 느린 공을 5.7 yd 로 망친다: 실측 아마추어 평균과 FlightScope 계산이 느린 공에서 서로 다르다.
+//!   PGA+LPGA 로 넓혀 맞춰도(--tour) 같은 그림: 공유 USGA 8.40 대 OF+2 8.16, FS 2.76 대 3.91.
+//!
 //! --engines (무작위 2000샷, 1코어, 자기 수렴해 대비 캐리 오차)
 //!   OpenFairway 이식 120 Hz (원본)   64,724 ns   최대 0.99 yd  RMS 0.49 yd
 //!   OpenFairway 이식 1000 Hz        496,622 ns   최대 0.12 yd
 //!   장 하나 H2 빠른 엔진 hτ=0.137        185 ns   최대 2.8e-4 yd RMS 8.0e-5 yd
-//!   → 같은 샷에서 350배 빠르고 적분 오차는 3,500배 작다. 기존 엔진은 C# 원본이 아니라 러스트 이식이라
+//!   공유 포화 장 빠른 엔진 hτ=0.137      202 ns   최대 3.4e-4 yd
+//!   → 같은 샷에서 290–350배 빠르고 적분 오차는 3,500배 작다. 기존 엔진은 C# 원본이 아니라 러스트 이식이라
 //!     실제 격차는 이보다 크거나 같다. 이식은 원본 회귀 시험 16개 중 14개 창 안 (벗어난 최대 1.08 yd).
 
-use flightbench::engine::{dimless, run, stream_par, usga_samples, H2 as H2f, USGA, YD};
+use flightbench::engine::{dimless, run, stream_par, usga_samples, Aero, FastAero, Shared, H2 as H2f, USGA, YD};
 use flightbench::harness::*;
 use flightbench::openfairway::{self as of, OpenFairway};
 use std::time::Instant;
 
-fn line<F: Flight + ?Sized>(name: &str, k: usize, params: &str, m: &F, t_fit: f64) -> Vec<f64> {
+static FS: std::sync::OnceLock<Vec<[f64; 6]>> = std::sync::OnceLock::new();
+
+fn line<F: Flight + Flight3 + ?Sized>(name: &str, k: usize, params: &str, m: &F, t_fit: f64) -> Vec<f64> {
     let t0 = Instant::now();
     let tr = score3(m, &PGA12);
     let ho = score3(m, &LPGA11);
@@ -48,10 +63,12 @@ fn line<F: Flight + ?Sized>(name: &str, k: usize, params: &str, m: &F, t_fit: f6
     let e: Vec<f64> = u.iter().zip(&obs).map(|(a, b)| a - b).collect();
     let pro: Vec<f64> = (0..20).filter(|&i| USGA[i].0.ends_with("Pro")).map(|i| e[i]).collect();
     let am: Vec<f64> = (0..20).filter(|&i| !USGA[i].0.ends_with("Pro")).map(|i| e[i]).collect();
+    let fs = score_fs(m, FS.get_or_init(|| load_fs("fs_shots.csv")));
     let t = t_fit + t0.elapsed().as_secs_f64();
     println!(
-        "{:<8} {:>2} | {:>5.2} {:>5.2} {:>5.2} | {:>5.2} {:>5.2} {:>5.2} | {:>5.2} {:>5.2} {:>5.2} {:>+5.1} | {:>6.0} | {}",
-        name, k, tr[0], tr[1], tr[2], ho[0], ho[1], ho[2], rmse(&e), rmse(&pro), rmse(&am), e.iter().sum::<f64>() / 20.0, t * 1e3, params
+        "{:<8} {:>2} | {:>5.2} {:>5.2} {:>5.2} | {:>5.2} {:>5.2} {:>5.2} | {:>5.2} {:>5.2} {:>5.2} {:>+5.1} | {:>5.2} {:>5.2} {:>5.2} {:>5.2} {:>5.2} {:>+5.1} | {:>5.0} | {}",
+        name, k, tr[0], tr[1], tr[2], ho[0], ho[1], ho[2], rmse(&e), rmse(&pro), rmse(&am), e.iter().sum::<f64>() / 20.0,
+        fs[0], fs[1], fs[2], fs[3], fs[4], fs[5], t * 1e3, params
     );
     u
 }
@@ -71,13 +88,21 @@ fn main() {
         let want: Vec<&str> = sel.split(',').collect();
         models.retain(|m| want.contains(&m.name.as_str()));
     }
-    let all3 = !flag("--carry");
-    println!("훈련: PGA 12행 {}.  판정: LPGA 11행, USGA 20행(가우스-에르미트 343점 분포 평균)", if all3 { "캐리·높이·착지각" } else { "캐리만" });
+    let wts: [f64; 3] = if let Ok(w) = std::env::var("W") {
+        let v: Vec<f64> = w.split(',').map(|x| x.parse().unwrap()).collect();
+        [v[0], v[1], v[2]]
+    } else if flag("--carry") { [1.0, 0.0, 0.0] } else { [1.0, 1.0, 1.0] };
+    let train: Vec<[f64; 6]> = if flag("--tour") { PGA12.iter().chain(LPGA11.iter()).copied().collect() } else { PGA12.to_vec() };
+    if flag("--tour") {
+        println!("[--tour] 훈련을 PGA 12행 + LPGA 11행으로 넓힘: LPGA 열은 보류가 아니라 훈련 성적이다");
+    }
+    println!("훈련: PGA 12행, 잔차 가중치 캐리 {} 높이 {} 착지각 {}.  판정: LPGA 11행, USGA 20행(가우스-에르미트 343점 분포 평균)", wts[0], wts[1], wts[2]);
     println!("RMSE: 캐리 yd / 높이 yd / 착지 deg");
-    println!("{:<8} {:>2} | {:^17} | {:^17} | {:^24} | {:>6} | 매개변수", "모형", "k", "PGA 훈련", "LPGA 보류", "USGA 전체 프로 아마 부호", "ms");
+    println!("FS: FlightScope 계산값 175샷 캐리 RMSE (전체 / <80 mph / 80–110 / >110), 최고 높이 RMSE yd, 캐리 부호 오차");
+    println!("{:<8} {:>2} | {:^17} | {:^17} | {:^24} | {:^35} | {:>5} | 매개변수", "모형", "k", "PGA 훈련", "LPGA 보류", "USGA 전체 프로 아마 부호", "FS 캐리 전체 느림 중간 빠름 높이 부호", "ms");
     for m in models.iter_mut() {
         let t0 = Instant::now();
-        fit(m, &PGA12, all3);
+        fit(m, &train, wts);
         let tf = t0.elapsed().as_secs_f64();
         let ps = m.pnames.iter().zip(&m.p).map(|(n, v)| format!("{n}={v:.4}")).collect::<Vec<_>>().join(" ");
         line(&m.name, m.free().len(), &ps, m, tf);
@@ -90,7 +115,7 @@ fn main() {
         // 공정 비교: 같은 PGA 자료로 기존 엔진의 전역 항력·양력 배율 2개를 다시 맞춘다
         let mut m = OpenFairway { hz: Some(120.0), mul: (1.0, 1.0) };
         let t0 = Instant::now();
-        fit(&mut m, &PGA12, all3);
+        fit(&mut m, &train, wts);
         let tf = t0.elapsed().as_secs_f64();
         line("OF+2", 2, &format!("기존 엔진 + 전역 배율 재맞춤: 항력×{:.3} 양력×{:.3}", m.mul.0, m.mul.1), &m, tf);
     }
@@ -197,25 +222,29 @@ fn engines() {
         println!("{:<44} {:>10.0} {:>12.3} {:>12.3}", format!("OpenFairway 이식, 반암시 오일러 {hz} Hz{tag}"), ns, e.iter().fold(0.0f64, |m, x| m.max(x.abs())), rmse(&e));
     }
     // 우리 엔진: 같은 샷을 무차원으로
-    let h2 = H2f { v: 0.2418, d: 0.2475, c: 2.401, lam: 7.08, e: 0.0 };
     let dl: Vec<[f64; 4]> = shots.iter().map(|s| { let d = dimless(s[0], s[1], s[2]); [d[0], d[1], d[2], s[3].to_radians()] }).collect();
-    let truth = run(&h2, &dl, 0.0002);
-    for dt in [0.128, 0.064] {
-        let t0 = Instant::now();
-        let r = run(&h2, &dl, dt);
-        let ns = t0.elapsed().as_nanos() as f64 / n as f64;
-        let e: Vec<f64> = r.iter().zip(&truth).map(|(a, b)| (a.0 - b.0) * YD).collect();
-        println!("{:<44} {:>10.0} {:>12.1e} {:>12.1e}", format!("장 하나 H2, f64 RK4 {} 걸음 (8샷 묶음)", (2.6 / dt) as u32), ns, e.iter().fold(0.0f64, |m, x| m.max(x.abs())), rmse(&e));
-    }
     let s32: Vec<[f32; 4]> = dl.iter().map(|d| [d[0] as f32, d[1] as f32, d[2] as f32, d[3].sin() as f32]).collect();
     let big: Vec<[f32; 4]> = (0..200_000).map(|i| s32[i % n]).collect();
-    for h in [0.137f32, 0.0685] {
-        let r = stream_par(&h2, &s32, h, 1);
-        let t0 = Instant::now();
-        let rb = stream_par(&h2, &big, h, 1);
-        let ns = t0.elapsed().as_nanos() as f64 / big.len() as f64;
-        std::hint::black_box(rb);
-        let e: Vec<f64> = r.iter().zip(&truth).map(|(a, b)| (a[0] as f64 - b.0) * YD).collect();
-        println!("{:<44} {:>10.0} {:>12.1e} {:>12.1e}", format!("장 하나 H2, 빠른 엔진 f32×16 hτ={h}"), ns, e.iter().fold(0.0f64, |m, x| m.max(x.abs())), rmse(&e));
+    fn ours<A: Aero + FastAero>(name: &str, ae: &A, dl: &[[f64; 4]], s32: &[[f32; 4]], big: &[[f32; 4]]) {
+        let n = dl.len();
+        let truth = run(ae, dl, 0.0002);
+        for dt in [0.128, 0.064] {
+            let t0 = Instant::now();
+            let r = run(ae, dl, dt);
+            let ns = t0.elapsed().as_nanos() as f64 / n as f64;
+            let e: Vec<f64> = r.iter().zip(&truth).map(|(a, b)| (a.0 - b.0) * YD).collect();
+            println!("{:<44} {:>10.0} {:>12.1e} {:>12.1e}", format!("장 하나 {name}, f64 RK4 {} 걸음 (8샷 묶음)", (2.6 / dt) as u32), ns, e.iter().fold(0.0f64, |m, x| m.max(x.abs())), rmse(&e));
+        }
+        for h in [0.137f32, 0.0685] {
+            let r = stream_par(ae, s32, h, 1);
+            let t0 = Instant::now();
+            let rb = stream_par(ae, big, h, 1);
+            let ns = t0.elapsed().as_nanos() as f64 / big.len() as f64;
+            std::hint::black_box(rb);
+            let e: Vec<f64> = r.iter().zip(&truth).map(|(a, b)| (a[0] as f64 - b.0) * YD).collect();
+            println!("{:<44} {:>10.0} {:>12.1e} {:>12.1e}", format!("장 하나 {name}, 빠른 엔진 f32×16 hτ={h}"), ns, e.iter().fold(0.0f64, |m, x| m.max(x.abs())), rmse(&e));
+        }
     }
+    ours("H2", &H2f { v: 0.2418, d: 0.2475, c: 2.401, lam: 7.08, e: 0.0 }, &dl, &s32, &big);
+    ours("공유", &Shared { v: 0.1156, d: 1.7695, c: 2.5881, l: 4.5843 }, &dl, &s32, &big);
 }
