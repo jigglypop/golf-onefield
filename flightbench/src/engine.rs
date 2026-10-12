@@ -75,10 +75,11 @@ impl Aero for Shared {
 }
 
 /// 공유 포화 장 + 항력 위기: 배경 항력이 느린 공에서 e 만큼 오른다.
-///   C_D = v + e/(1 + (|u|/u0)^4) + d r,  C_L = c r,  r = S/(1 + l S)
-///   u0 = Re0 / RE_PER_U (Re0 ≈ 6.3e4, 문헌의 임계 영역 4–6e4 근처)
+///   C_D = v + e/(1 + (|u|/u0)^n) + d r,  C_L = c r,  r = S/(1 + l S)
+///   u0 = Re0 / RE_PER_U. N 은 위기 꺾임의 가파름(짝수, 형 매개변수라 곱셈으로 펼쳐진다):
+///   4 = 이전 '공유위기', 12 = '공유위기12'(기본, CV 로 고름)
 #[derive(Clone, Copy, Debug)]
-pub struct SharedRe {
+pub struct SharedRe<const N: i32 = 12> {
     pub v: f64,
     pub e: f64,
     pub u0: f64,
@@ -86,13 +87,34 @@ pub struct SharedRe {
     pub c: f64,
     pub l: f64,
 }
-impl Aero for SharedRe {
+impl<const N: i32> Aero for SharedRe<N> {
     #[inline(always)]
     fn kk(&self, sp: f64, w: f64) -> (f64, f64) {
         let r = w * sp / (sp + self.l * w);
         let q = sp * sp / (self.u0 * self.u0);
-        ((self.v + self.e / (1.0 + q * q)) * sp + self.d * r, self.c * r)
+        // q^(N/2): N 이 상수라 분기 없이 곱 몇 번으로 접힌다
+        let qn = match N {
+            4 => q * q,
+            12 => {
+                let q3 = q * q * q;
+                q3 * q3
+            }
+            _ => q.powi(N / 2),
+        };
+        ((self.v + self.e / (1.0 + qn)) * sp + self.d * r, self.c * r)
     }
+}
+
+/// 기본 장: '공유위기12' (공유 포화 + 가파른 항력 위기 n = 12), PGA 12행 세 양으로만 맞춘 값.
+/// 고르기: 투어 23행 한 행 빼기 CV 2.675 (n = 4 는 2.823), n 단면 4·6·8·12·16 에서 12 가 최소.
+/// 판정(PGA 만 훈련): LPGA 2.78/1.68/3.05, USGA 7.42 (프로 13.75, 아마 4.64), FS 캐리 3.33·높이 0.55.
+pub fn default_field() -> SharedRe<12> {
+    SharedRe { v: 0.1383, e: 0.2540, u0: 74003.0320 / crate::harness::RE_PER_U, d: 1.4838, c: 2.8062, l: 6.5014 }
+}
+
+/// 이전 기본 장 '공유위기' (n = 4), 비교·회귀용
+pub fn field_n4() -> SharedRe<4> {
+    SharedRe { v: 0.1330, e: 0.3247, u0: 62859.6581 / crate::harness::RE_PER_U, d: 1.3688, c: 2.7901, l: 5.9226 }
 }
 
 #[derive(Clone, Copy)]
@@ -226,11 +248,12 @@ pub fn run_par<A: Aero>(ae: &A, shots: &[[f64; 4]], dt: f64, threads: usize) -> 
 //  4) 컴파일러 자동 벡터화가 배열 클로저를 ymm 반쪽·memcpy·함수 호출로 쪼갰다(측정 14 ns/샷·걸음).
 //     상태 9개를 __m512 값으로 레지스터에 묶어 둔다.
 
-#[cfg(not(all(target_arch = "x86_64", target_feature = "avx512f")))]
-compile_error!("빠른 엔진은 AVX-512 가 필요하다 (.cargo/config.toml 의 target-cpu=native)");
+// 판본 셋, 같은 16레인 API(F): x86_64 + AVX-512 는 zmm 한 개, aarch64 는 NEON q 레지스터 4개,
+// 그 밖(AVX-512 없는 x86 등)은 배열 16칸(컴파일러 자동 벡터화). stream 은 AVX-512 판과 이식판 둘.
 
 pub const WL: usize = 16;
 
+#[cfg(all(target_arch = "x86_64", target_feature = "avx512f"))]
 #[allow(unused_unsafe)]
 pub mod simd {
     use std::arch::x86_64::*;
@@ -318,6 +341,272 @@ pub mod simd {
         }
     }
 }
+
+/// aarch64 (애플 실리콘 등): q 레지스터 4개로 16레인. 근사 역수·역제곱근은 추정 명령(약 8비트) + 뉴턴 1회로
+/// AVX-512 의 rcp14·rsqrt14(14비트) 이상을 맞춘다.
+#[cfg(target_arch = "aarch64")]
+#[allow(unused_unsafe)]
+pub mod simd {
+    use std::arch::aarch64::*;
+    use std::ops::{Add, Mul, Neg, Sub};
+    #[derive(Clone, Copy)]
+    pub struct F(pub [float32x4_t; 4]);
+    /// 비트마스크 4비트 → 레인 마스크
+    const LUT: [[u32; 4]; 16] = {
+        let mut t = [[0u32; 4]; 16];
+        let mut i = 0;
+        while i < 16 {
+            let mut j = 0;
+            while j < 4 {
+                t[i][j] = if (i >> j) & 1 == 1 { u32::MAX } else { 0 };
+                j += 1;
+            }
+            i += 1;
+        }
+        t
+    };
+    impl F {
+        #[inline(always)]
+        fn map(self, f: impl Fn(float32x4_t) -> float32x4_t) -> F {
+            F([f(self.0[0]), f(self.0[1]), f(self.0[2]), f(self.0[3])])
+        }
+        #[inline(always)]
+        fn zip(a: F, b: F, f: impl Fn(float32x4_t, float32x4_t) -> float32x4_t) -> F {
+            F([f(a.0[0], b.0[0]), f(a.0[1], b.0[1]), f(a.0[2], b.0[2]), f(a.0[3], b.0[3])])
+        }
+        #[inline(always)]
+        pub fn splat(x: f32) -> F {
+            F([unsafe { vdupq_n_f32(x) }; 4])
+        }
+        #[inline(always)]
+        pub fn load(a: &[f32; 16]) -> F {
+            unsafe { F(std::array::from_fn(|c| vld1q_f32(a.as_ptr().add(4 * c)))) }
+        }
+        #[inline(always)]
+        pub fn store(self, a: &mut [f32; 16]) {
+            for c in 0..4 {
+                unsafe { vst1q_f32(a.as_mut_ptr().add(4 * c), self.0[c]) }
+            }
+        }
+        #[inline(always)]
+        pub fn to_array(self) -> [f32; 16] {
+            let mut a = [0f32; 16];
+            self.store(&mut a);
+            a
+        }
+        #[inline(always)]
+        pub fn from_array(a: [f32; 16]) -> F {
+            F::load(&a)
+        }
+        /// a*b + c
+        #[inline(always)]
+        pub fn fma(a: F, b: F, c: F) -> F {
+            F([0, 1, 2, 3].map(|i| unsafe { vfmaq_f32(c.0[i], a.0[i], b.0[i]) }))
+        }
+        /// c - a*b
+        #[inline(always)]
+        pub fn fnma(a: F, b: F, c: F) -> F {
+            F([0, 1, 2, 3].map(|i| unsafe { vfmsq_f32(c.0[i], a.0[i], b.0[i]) }))
+        }
+        /// a*b - c
+        #[inline(always)]
+        pub fn fms(a: F, b: F, c: F) -> F {
+            F([0, 1, 2, 3].map(|i| unsafe { vnegq_f32(vfmsq_f32(c.0[i], a.0[i], b.0[i])) }))
+        }
+        /// 1/x: 추정 + 뉴턴 1회 (약 16비트)
+        #[inline(always)]
+        pub fn rcp14(self) -> F {
+            self.map(|x| unsafe {
+                let e = vrecpeq_f32(x);
+                vmulq_f32(e, vrecpsq_f32(x, e))
+            })
+        }
+        /// 1/sqrt(x): 추정 + 뉴턴 1회 (약 16비트). 걸음 재매개에만 쓴다.
+        #[inline(always)]
+        pub fn rsqrt14(self) -> F {
+            self.map(|x| unsafe {
+                let e = vrsqrteq_f32(x);
+                vmulq_f32(e, vrsqrtsq_f32(vmulq_f32(x, e), e))
+            })
+        }
+        /// 1/sqrt(x): 뉴턴 2회 (f32 정밀도)
+        #[inline(always)]
+        pub fn rsqrt(self) -> F {
+            self.map(|x| unsafe {
+                let mut e = vrsqrteq_f32(x);
+                e = vmulq_f32(e, vrsqrtsq_f32(vmulq_f32(x, e), e));
+                vmulq_f32(e, vrsqrtsq_f32(vmulq_f32(x, e), e))
+            })
+        }
+        #[inline(always)]
+        pub fn div(self, o: F) -> F {
+            F::zip(self, o, |a, b| unsafe { vdivq_f32(a, b) })
+        }
+        #[inline(always)]
+        pub fn min(self, o: F) -> F {
+            F::zip(self, o, |a, b| unsafe { vminq_f32(a, b) })
+        }
+        #[inline(always)]
+        pub fn max(self, o: F) -> F {
+            F::zip(self, o, |a, b| unsafe { vmaxq_f32(a, b) })
+        }
+        #[inline(always)]
+        pub fn neg_mask(self) -> u16 {
+            unsafe {
+                let bits = vld1q_u32([1u32, 2, 4, 8].as_ptr());
+                let mut m = 0u16;
+                for c in 0..4 {
+                    m |= (vaddvq_u32(vandq_u32(vcltzq_f32(self.0[c]), bits)) as u16) << (4 * c);
+                }
+                m
+            }
+        }
+        /// 마스크 m 의 레인은 a, 나머지는 b
+        #[inline(always)]
+        pub fn select(m: u16, a: F, b: F) -> F {
+            F([0, 1, 2, 3].map(|c| unsafe { vbslq_f32(vld1q_u32(LUT[((m >> (4 * c)) & 15) as usize].as_ptr()), a.0[c], b.0[c]) }))
+        }
+    }
+    impl Add for F {
+        type Output = F;
+        #[inline(always)]
+        fn add(self, o: F) -> F {
+            F::zip(self, o, |a, b| unsafe { vaddq_f32(a, b) })
+        }
+    }
+    impl Sub for F {
+        type Output = F;
+        #[inline(always)]
+        fn sub(self, o: F) -> F {
+            F::zip(self, o, |a, b| unsafe { vsubq_f32(a, b) })
+        }
+    }
+    impl Mul for F {
+        type Output = F;
+        #[inline(always)]
+        fn mul(self, o: F) -> F {
+            F::zip(self, o, |a, b| unsafe { vmulq_f32(a, b) })
+        }
+    }
+    impl Neg for F {
+        type Output = F;
+        #[inline(always)]
+        fn neg(self) -> F {
+            self.map(|a| unsafe { vnegq_f32(a) })
+        }
+    }
+}
+
+/// 그 밖의 대상: 배열 16칸. 역수·역제곱근은 정확한 값(근사보다 느리지만 결과는 같은 곡선).
+#[cfg(not(any(all(target_arch = "x86_64", target_feature = "avx512f"), target_arch = "aarch64")))]
+pub mod simd {
+    use std::ops::{Add, Mul, Neg, Sub};
+    #[derive(Clone, Copy)]
+    #[repr(align(64))]
+    pub struct F(pub [f32; 16]);
+    impl F {
+        #[inline(always)]
+        fn map(self, f: impl Fn(f32) -> f32) -> F {
+            F(self.0.map(f))
+        }
+        #[inline(always)]
+        fn zip(a: F, b: F, f: impl Fn(f32, f32) -> f32) -> F {
+            F(std::array::from_fn(|i| f(a.0[i], b.0[i])))
+        }
+        #[inline(always)]
+        pub fn splat(x: f32) -> F {
+            F([x; 16])
+        }
+        #[inline(always)]
+        pub fn load(a: &[f32; 16]) -> F {
+            F(*a)
+        }
+        #[inline(always)]
+        pub fn store(self, a: &mut [f32; 16]) {
+            *a = self.0;
+        }
+        #[inline(always)]
+        pub fn to_array(self) -> [f32; 16] {
+            self.0
+        }
+        #[inline(always)]
+        pub fn from_array(a: [f32; 16]) -> F {
+            F(a)
+        }
+        #[inline(always)]
+        pub fn fma(a: F, b: F, c: F) -> F {
+            F(std::array::from_fn(|i| a.0[i] * b.0[i] + c.0[i]))
+        }
+        #[inline(always)]
+        pub fn fnma(a: F, b: F, c: F) -> F {
+            F(std::array::from_fn(|i| c.0[i] - a.0[i] * b.0[i]))
+        }
+        #[inline(always)]
+        pub fn fms(a: F, b: F, c: F) -> F {
+            F(std::array::from_fn(|i| a.0[i] * b.0[i] - c.0[i]))
+        }
+        #[inline(always)]
+        pub fn rcp14(self) -> F {
+            self.map(|x| 1.0 / x)
+        }
+        #[inline(always)]
+        pub fn rsqrt14(self) -> F {
+            self.map(|x| 1.0 / x.sqrt())
+        }
+        #[inline(always)]
+        pub fn rsqrt(self) -> F {
+            self.map(|x| 1.0 / x.sqrt())
+        }
+        #[inline(always)]
+        pub fn div(self, o: F) -> F {
+            F::zip(self, o, |a, b| a / b)
+        }
+        #[inline(always)]
+        pub fn min(self, o: F) -> F {
+            F::zip(self, o, f32::min)
+        }
+        #[inline(always)]
+        pub fn max(self, o: F) -> F {
+            F::zip(self, o, f32::max)
+        }
+        #[inline(always)]
+        pub fn neg_mask(self) -> u16 {
+            (0..16).fold(0u16, |m, i| m | (((self.0[i] < 0.0) as u16) << i))
+        }
+        #[inline(always)]
+        pub fn select(m: u16, a: F, b: F) -> F {
+            F(std::array::from_fn(|i| if (m >> i) & 1 == 1 { a.0[i] } else { b.0[i] }))
+        }
+    }
+    impl Add for F {
+        type Output = F;
+        #[inline(always)]
+        fn add(self, o: F) -> F {
+            F::zip(self, o, |a, b| a + b)
+        }
+    }
+    impl Sub for F {
+        type Output = F;
+        #[inline(always)]
+        fn sub(self, o: F) -> F {
+            F::zip(self, o, |a, b| a - b)
+        }
+    }
+    impl Mul for F {
+        type Output = F;
+        #[inline(always)]
+        fn mul(self, o: F) -> F {
+            F::zip(self, o, |a, b| a * b)
+        }
+    }
+    impl Neg for F {
+        type Output = F;
+        #[inline(always)]
+        fn neg(self) -> F {
+            self.map(|a| -a)
+        }
+    }
+}
 pub use simd::F;
 
 pub trait FastAero: Copy + Send + Sync {
@@ -365,7 +654,7 @@ impl FastAero for Shared {
     }
 }
 
-impl FastAero for SharedRe {
+impl<const N: i32> FastAero for SharedRe<N> {
     type P = [F; 6];
     fn prep(&self) -> [F; 6] {
         [self.v, self.e, 1.0 / (self.u0 * self.u0), self.d, self.c, self.l].map(|x| F::splat(x as f32))
@@ -375,12 +664,21 @@ impl FastAero for SharedRe {
         let sp = sqrt_nr(q);
         let one = F::splat(1.0);
         let two = F::splat(2.0);
-        // 역수 두 개를 rcp14 + 뉴턴 1회로: 1/(sp + l w), 1/(1 + (q/u0^2)^2)
+        // 역수 두 개를 rcp14 + 뉴턴 1회로: 1/(sp + l w), 1/(1 + (q/u0^2)^(N/2))
         let den = F::fma(p[5], w, sp);
         let a0 = den.rcp14();
         let inv = a0 * F::fnma(den, a0, two);
         let x = q * p[2];
-        let den2 = F::fma(x, x, one);
+        // x^(N/2): N 이 상수라 곱 몇 번으로 접힌다
+        let xn = match N {
+            4 => x * x,
+            12 => {
+                let x3 = x * x * x;
+                x3 * x3
+            }
+            _ => (1..N / 2).fold(x, |a, _| a * x),
+        };
+        let den2 = xn + one;
         let b0 = den2.rcp14();
         let inv2 = b0 * F::fnma(den2, b0, two);
         let r = w * sp * inv;
@@ -452,6 +750,7 @@ pub fn sincos_poly(x: f32) -> (f32, f32) {
 /// 입력 (v0', theta, S0, sin a) → 착지 [x, z] (무차원). h 는 τ 걸음.
 /// 착지·재충전도 벡터로 한다: 에르미트 보간은 16레인 전체에 한 번, 결과는 마스크 scatter,
 /// 새 샷은 SoA 입력에서 마스크 expand-load (떨어진 레인에만 다음 샷이 차례로 들어간다).
+#[cfg(all(target_arch = "x86_64", target_feature = "avx512f"))]
 #[allow(unused_unsafe)]
 pub fn stream<A: FastAero>(ae: &A, shots: &[[f32; 4]], h: f32, out: &mut [[f32; 2]]) {
     let batch_k: usize = std::env::var("BATCH_K").ok().and_then(|v| v.parse().ok()).unwrap_or(3);
@@ -573,6 +872,137 @@ pub fn stream<A: FastAero>(ae: &A, shots: &[[f32; 4]], h: f32, out: &mut [[f32; 
                     k1[g] = kn;
                 }
             }
+        }
+    }
+}
+
+/// 이식판 stream: AVX-512 판과 같은 순서·같은 식. 마스크 연산은 F::select 와 u16 비트마스크로,
+/// expand-load·scatter 는 레인 고리로 한다(착지·재충전 때만 돌아 걸음당 비용은 거의 없다).
+#[cfg(not(all(target_arch = "x86_64", target_feature = "avx512f")))]
+pub fn stream<A: FastAero>(ae: &A, shots: &[[f32; 4]], h: f32, out: &mut [[f32; 2]]) {
+    let batch_k: usize = std::env::var("BATCH_K").ok().and_then(|v| v.parse().ok()).unwrap_or(3);
+    let n = shots.len();
+    if n == 0 {
+        return;
+    }
+    assert!(n < i32::MAX as usize / 2 && out.len() == n);
+    let p = ae.prep();
+    let mut init = vec![vec![0f32; n + WL]; 5];
+    {
+        let [i0, i1, i2, i3, i4] = &mut init[..] else { unreachable!() };
+        for k in 0..n {
+            let s = shots[k];
+            let (sn, cs) = sincos_poly(s[1]);
+            i0[k] = s[0] * cs;
+            i1[k] = s[0] * sn;
+            i2[k] = s[2] * s[0];
+            i3[k] = s[3];
+            i4[k] = (1.0 - s[3] * s[3]).sqrt();
+        }
+    }
+    let max_age = (8.0 / h) as i32 + 2;
+    let (hh, hv, h6) = (F::splat(0.5 * h), F::splat(h), F::splat(h / 6.0));
+    let zero = F::splat(0.0);
+    let mut next = 0usize;
+    let mut st = [zero; 7];
+    let (mut oy, mut oz) = (zero, F::splat(1.0));
+    let mut id = [0usize; WL];
+    let mut age = [0i32; WL];
+    let mut act = 0u16;
+    let mut pend = 0u16;
+    // 레인 채우기: 마스크 rm 의 레인에 다음 샷을 차례로
+    macro_rules! refill {
+        ($rm:expr) => {{
+            let rm: u16 = $rm;
+            let mut s = st.map(F::to_array);
+            let (mut ya, mut za) = (oy.to_array(), oz.to_array());
+            for lane in 0..WL {
+                if (rm >> lane) & 1 == 1 {
+                    for k in [0usize, 1, 2, 5] {
+                        s[k][lane] = 0.0;
+                    }
+                    s[3][lane] = init[0][next];
+                    s[4][lane] = init[1][next];
+                    s[6][lane] = init[2][next];
+                    ya[lane] = init[3][next];
+                    za[lane] = init[4][next];
+                    id[lane] = next;
+                    age[lane] = 0;
+                    next += 1;
+                }
+            }
+            st = s.map(F::from_array);
+            oy = F::from_array(ya);
+            oz = F::from_array(za);
+            act |= rm;
+        }};
+    }
+    let k = n.min(WL);
+    let rm = if k == WL { 0xFFFF } else { ((1u32 << k) - 1) as u16 };
+    refill!(rm);
+    if rm != 0xFFFF {
+        // 빈 레인은 무해한 상태로
+        st[3] = F::select(rm, st[3], F::splat(1.0));
+        st[4] = F::select(rm, st[4], F::splat(0.3));
+        oz = F::select(rm, oz, F::splat(1.0));
+    }
+    let mut k1 = deriv16::<A>(&p, st[3], st[4], st[5], st[6], oy, oz);
+    let (one, c2, c3) = (F::splat(1.0), F::splat(2.0), F::splat(3.0));
+    while act != 0 {
+        let (nx, kn) = rk4_16::<A>(&p, &st, &k1, oy, oz, hh, hv, h6);
+        let (mut over, mut ge2) = (0u16, 0u16);
+        for lane in 0..WL {
+            age[lane] += 1;
+            over |= ((age[lane] > max_age) as u16) << lane;
+            ge2 |= ((age[lane] >= 2) as u16) << lane;
+        }
+        over &= act & !pend;
+        pend |= (nx[1].neg_mask() & act & ge2) | over;
+        let m = pend;
+        // 착지한 레인은 얼려 두고 K 개가 모이면 한꺼번에 처리
+        if m == 0 || ((m.count_ones() as usize) < batch_k && next < n && over == 0) {
+            if m == 0 {
+                (st, k1) = (nx, kn);
+            } else {
+                st = std::array::from_fn(|k| F::select(m, st[k], nx[k]));
+                k1 = std::array::from_fn(|k| F::select(m, k1[k], kn[k]));
+            }
+            continue;
+        }
+        pend = 0;
+        // 에르미트 착지 (16레인 한 번에; 쓰는 건 m 레인뿐)
+        let (y0, y1) = (st[1], nx[1]);
+        let (m0, m1) = (k1[1] * hv, kn[1] * hv);
+        let mut t = y0.div(y0 - y1);
+        for _ in 0..3 {
+            let (t2, t3) = (t * t, t * t * t);
+            let f = (c2 * t3 - c3 * t2 + one) * y0 + (t3 - c2 * t2 + t) * m0 + (c3 * t2 - c2 * t3) * y1 + (t3 - t2) * m1;
+            let df = (F::splat(6.0) * (t2 - t)) * (y0 - y1) + (c3 * t2 - F::splat(4.0) * t + one) * m0 + (c3 * t2 - c2 * t) * m1;
+            t = (t - f.div(df)).max(zero).min(one);
+        }
+        let (t2, t3) = (t * t, t * t * t);
+        let (b0, b1, b2, b3) = (c2 * t3 - c3 * t2 + one, t3 - c2 * t2 + t, c3 * t2 - c2 * t3, t3 - t2);
+        let xl = (b0 * st[0] + b1 * k1[0] * hv + b2 * nx[0] + b3 * kn[0] * hv).to_array();
+        let zl = (b0 * st[2] + b1 * k1[2] * hv + b2 * nx[2] + b3 * kn[2] * hv).to_array();
+        for lane in 0..WL {
+            if (m >> lane) & 1 == 1 {
+                out[id[lane]] = if (over >> lane) & 1 == 1 { [f32::NAN; 2] } else { [xl[lane], zl[lane]] };
+            }
+        }
+        // 남은 샷 수만큼만 다시 채운다 (낮은 레인부터)
+        let avail = n - next;
+        let mut rm = m;
+        while rm.count_ones() as usize > avail {
+            rm &= !(1u16 << (15 - rm.leading_zeros()));
+        }
+        act &= !m;
+        st = nx;
+        if rm != 0 {
+            refill!(rm);
+            let kr = deriv16::<A>(&p, st[3], st[4], st[5], st[6], oy, oz);
+            k1 = std::array::from_fn(|k| F::select(rm, kr[k], kn[k]));
+        } else {
+            k1 = kn;
         }
     }
 }

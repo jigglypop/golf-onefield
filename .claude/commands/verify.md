@@ -5,5 +5,6 @@ description: 바꾼 뒤 회귀 점검 (빌드·단위 시험·시험대·가짜 
 
 1. `cd flightbench && cargo build --profile quick 2>&1 | grep -E "^(warning|error)"` → 없어야 함
 2. `cargo test --profile quick --lib` → 전부 통과
-3. `./target/quick/quick` → 공유위기 LPGA 캐리 ≈ 2.85, USGA ≈ 7.34 (±0.05)
-4. `cd .. && tools/e2e_synth.sh` → 7번 캐리 167.9 (참 168.2), 던지기 k_t 0.285 ±0.002
+3. `./target/quick/quick` → 공유위기12 LPGA 캐리 ≈ 2.78, USGA ≈ 7.42 (±0.05). 공유위기(n=4) 줄은 2.85 / 7.34 그대로
+4. `cd .. && tools/e2e_synth.sh` → 7번 캐리 168.4 (참 168.5), 던지기 k_t 0.285 ±0.002 (opencv 있는 python3 가 PATH 앞에 있어야 함)
+5. `web3d/` 가 있으면 `cd web3d && npm test` → 러스트 참값 대조 통과

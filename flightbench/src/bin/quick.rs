@@ -55,8 +55,17 @@
 //!   공유 포화 장 빠른 엔진 hτ=0.137      202 ns   최대 3.4e-4 yd
 //!   → 같은 샷에서 290–350배 빠르고 적분 오차는 3,500배 작다. 기존 엔진은 C# 원본이 아니라 러스트 이식이라
 //!     실제 격차는 이보다 크거나 같다. 이식은 원본 회귀 시험 16개 중 14개 창 안 (벗어난 최대 1.08 yd).
+//!
+//! 결과 (2026-10-12, 애플 M4 Pro, NEON 빠른 엔진). 위기의 가파름 n 단면 CV (투어 23행): 4 2.823, 6 2.760, 8 2.713,
+//!   12 2.675, 16 2.681 → 기본 장을 '공유위기12'(n = 12)로. PGA 만 훈련:
+//!   공유위기12 6매  2.42 1.44 1.98   2.78 1.68 3.05   7.42 13.75 4.64     3.33 3.89 0.55  (FS 캐리/느림/높이)
+//!   OF+2       2매  5.77 3.60 4.91   3.42 2.98 5.30   8.06 14.29 5.49     4.16 2.94 1.86
+//!   USGA 프로 오차는 거의 'F DR Pro' 한 행 (127.6 mph 에 216.7 yd: 모든 모형 −27.5 ~ −29.9 yd) 때문이다 (--rows).
+//!   --joint (PGA + FS 131샷 훈련, FS 44샷·USGA 판정): 공유위기12 FS 보류 1.82·높이 0.67, USGA 7.82 (프로* 3.21, 아마 5.85)
+//!     OF 원본(FS 로 보정) 2.42·1.47, 9.31 (9.32, 7.61) / OF+2 혼합 4.06·1.64, 8.08 (3.42, 5.63). FS 를 넣으면 USGA 아마는 나빠진다.
+//!   --engines (M4 1코어): OF 120 Hz 26,645 ns 0.99 yd, OF 1000 Hz 218,953 ns 0.117 yd, 공유위기12 빠른 엔진 240 ns 3.0e-4 yd.
 
-use flightbench::engine::{dimless, run, stream_par, usga_samples, Aero, FastAero, Shared, SharedRe, H2 as H2f, USGA, YD};
+use flightbench::engine::{default_field, dimless, field_n4, run, stream_par, usga_samples, Aero, FastAero, Shared, H2 as H2f, USGA, YD};
 use flightbench::harness::*;
 use flightbench::openfairway::{self as of, OpenFairway};
 use std::time::Instant;
@@ -80,6 +89,25 @@ fn line<F: Flight + Flight3 + ?Sized>(name: &str, k: usize, params: &str, m: &F,
         fs[0], fs[1], fs[2], fs[3], fs[4], fs[5], t * 1e3, params
     );
     u
+}
+
+/// --joint 한 줄: 투어 훈련 세 양, FS 훈련 캐리, FS 보류, USGA (프로* = 자료가 의심스러운 'F DR Pro' 행을 뺀 프로 3행)
+#[allow(clippy::too_many_arguments)]
+fn joint_line<F: Flight + Flight3>(name: &str, k: usize, m: &F, train: &[[f64; 6]], fs_tr: &[[f64; 6]], fs_ho: &[[f64; 6]], cv: Option<[f64; 6]>, t: f64, params: &str) -> String {
+    let tr = score3(m, train);
+    let ftr = score_fs(m, fs_tr);
+    let fho = score_fs(m, fs_ho);
+    let u = usga_gh(m);
+    let e: Vec<f64> = u.iter().zip(USGA.iter()).map(|(a, r)| a - r.7).collect();
+    let pick = |f: &dyn Fn(&str) -> bool| (0..20).filter(|&i| f(USGA[i].0)).map(|i| e[i]).collect::<Vec<_>>();
+    let pro = pick(&|l| l.ends_with("Pro"));
+    let pro_x = pick(&|l| l.ends_with("Pro") && l != "F DR Pro");
+    let am = pick(&|l| !l.ends_with("Pro"));
+    let cvs = cv.map_or("       –       ".to_string(), |c| format!("{:>5.2} {:>5.2} {:>6.3}", c[0], c[3], c[5]));
+    format!(
+        "{:<10} {:>2} | {} | {:>5.2} {:>5.2} {:>5.2} | {:>5.2} | {:>5.2} {:>5.2} {:>5.2} {:>5.2} {:>5.2} {:>+5.1} | {:>5.2} {:>5.2} {:>5.2} {:>5.2} | {:>5.1} | {}",
+        name, k, cvs, tr[0], tr[1], tr[2], ftr[0], fho[0], fho[1], fho[2], fho[3], fho[4], fho[5], rmse(&e), rmse(&pro), rmse(&pro_x), rmse(&am), t, params
+    )
 }
 
 fn main() {
@@ -109,6 +137,42 @@ fn main() {
     println!("RMSE: 캐리 yd / 높이 yd / 착지 deg");
     println!("FS: FlightScope 계산값 175샷 캐리 RMSE (전체 / <80 mph / 80–110 / >110), 최고 높이 RMSE yd, 캐리 부호 오차");
     println!("{:<8} {:>2} | {:^17} | {:^17} | {:^24} | {:^35} | {:>5} | 매개변수", "모형", "k", "PGA 훈련", "LPGA 보류", "USGA 전체 프로 아마 부호", "FS 캐리 전체 느림 중간 빠름 높이 부호", "ms");
+    if flag("--joint") {
+        // 혼합 맞춤: 투어표 + FS 4분의 3 으로 맞추고, FS 4분의 1(i % 4 == 0)과 USGA 20행으로 판정한다.
+        // 고르기는 --cv (훈련 자료 안의 5겹 교차검증)로만. OF 원본은 FS 전체로 보정됐으므로 FS 보류 묶음을 이미 본 셈이다(유리).
+        let fs_all = FS.get_or_init(|| load_fs("fs_shots.csv")).clone();
+        let fs_tr: Vec<[f64; 6]> = fs_all.iter().enumerate().filter(|(i, _)| i % 4 != 0).map(|(_, r)| *r).collect();
+        let fs_ho: Vec<[f64; 6]> = fs_all.iter().enumerate().filter(|(i, _)| i % 4 == 0).map(|(_, r)| *r).collect();
+        let n_tour = train.len() * wts.iter().filter(|x| **x > 0.0).count();
+        let wfs = std::env::var("FSW").ok().and_then(|v| v.parse().ok()).unwrap_or((n_tour as f64 / (2.0 * fs_tr.len() as f64)).sqrt());
+        println!("\n[--joint] 훈련: 투어 {}행 + FS {}샷 (FS 잔차 가중치 {:.3}: 두 자료의 총 무게를 같게). 판정: FS 보류 {}샷, USGA 20행", train.len(), fs_tr.len(), wfs, fs_ho.len());
+        println!("{:<10} {:>2} | {:^19} | {:^17} | {:^5} | {:^35} | {:^23} | {:>5} | 매개변수", "모형", "k", "5겹CV 투어캐리 FS캐리 종합", "투어 훈련", "FS훈련", "FS 보류 캐리 전체 느림 중간 빠름 높이 부호", "USGA 전체 프로 프로* 아마", "s");
+        let mut out = Vec::new();
+        for m in models.iter_mut() {
+            let t0 = Instant::now();
+            fit_mixed(m, &train, wts, &fs_tr, wfs);
+            let cv = flag("--cv").then(|| kfold_mixed(m, &train, wts, &fs_tr, wfs, 5));
+            let ps = m.pnames.iter().zip(&m.p).map(|(n, v)| format!("{n}={v:.4}")).collect::<Vec<_>>().join(" ");
+            let key = cv.map_or(0.0, |c| c[5]);
+            out.push((key, joint_line(&m.name, m.free().len(), m, &train, &fs_tr, &fs_ho, cv, t0.elapsed().as_secs_f64(), &ps)));
+        }
+        if flag("--cv") {
+            out.sort_by(|a, b| a.0.total_cmp(&b.0));
+        }
+        for (_, l) in &out {
+            println!("{l}");
+        }
+        if !flag("--noof") {
+            let m0 = OpenFairway { hz: Some(120.0), mul: (1.0, 1.0) };
+            println!("{}", joint_line("OF원본", 0, &m0, &train, &fs_tr, &fs_ho, None, 0.0, "기존 엔진 그대로 (FS 전체로 보정됨: 보류 묶음도 본 셈)"));
+            let mut m = OpenFairway { hz: Some(120.0), mul: (1.0, 1.0) };
+            let t0 = Instant::now();
+            fit_mixed(&mut m, &train, wts, &fs_tr, wfs);
+            println!("{}", joint_line("OF+2혼합", 2, &m, &train, &fs_tr, &fs_ho, None, t0.elapsed().as_secs_f64(), &format!("같은 혼합 자료로 배율 재맞춤: 항력×{:.3} 양력×{:.3}", m.mul.0, m.mul.1)));
+        }
+        println!("총 {:.2} s", t_all.elapsed().as_secs_f64());
+        return;
+    }
     if flag("--cv") {
         // 꼴 고르기: 훈련 자료 안의 한 행 빼기 교차검증으로만. USGA·FS 는 고르기에 쓰지 않는 판정 자료.
         println!("\n[--cv] 훈련 {}행 한 행 빼기 교차검증 (고르기 기준) + 판정 자료 (고르기에 안 씀)", train.len());
@@ -117,7 +181,7 @@ fn main() {
         for m in models.iter_mut() {
             let t0 = Instant::now();
             fit(m, &train, wts);
-            let cv = loo_cv(m, &train, wts, 2);
+            let cv = loo_cv(m, &train, wts, std::thread::available_parallelism().map_or(2, |n| n.get()).min(train.len()));
             let u = usga_gh(m);
             let e: Vec<f64> = u.iter().zip(USGA.iter()).map(|(a, r)| a - r.7).collect();
             let pro: Vec<f64> = (0..20).filter(|&i| USGA[i].0.ends_with("Pro")).map(|i| e[i]).collect();
@@ -145,6 +209,7 @@ fn main() {
     for (n, m) in ofs.iter().filter(|(n, _)| !flag("--noof") && (flag("--ofref") || *n == "OF120Hz")) {
         line(n, 0, "기존 엔진 OpenFairway 이식 그대로 (FlightScope 로 맞춘 값, 우리 자료로 다시 맞추지 않음)", m, 0.0);
     }
+    let mut of2 = None;
     if !flag("--noof") {
         // 공정 비교: 같은 PGA 자료로 기존 엔진의 전역 항력·양력 배율 2개를 다시 맞춘다
         let mut m = OpenFairway { hz: Some(120.0), mul: (1.0, 1.0) };
@@ -152,6 +217,7 @@ fn main() {
         fit(&mut m, &train, wts);
         let tf = t0.elapsed().as_secs_f64();
         line("OF+2", 2, &format!("기존 엔진 + 전역 배율 재맞춤: 항력×{:.3} 양력×{:.3}", m.mul.0, m.mul.1), &m, tf);
+        of2 = Some(m);
     }
     if flag("--rows") {
         for (title, rows, labs) in [("PGA", &PGA12[..], &PGA_LAB[..]), ("LPGA", &LPGA11[..], &LPGA_LAB[..])] {
@@ -166,6 +232,20 @@ fn main() {
                 s += &format!(" OF {:+5.1} {:+5.1} {:+5.1}", o[0] - r[3], o[1] - r[4], o[2] - r[5]);
                 println!("{s}");
             }
+        }
+        // USGA 행별: 분포 평균 캐리 - 보고된 캐리 (입력 평균 ± 표준편차를 같이 보여 준다)
+        println!("\nUSGA 행별 잔차 (분포 평균 캐리 − 보고 캐리, yd)");
+        let us: Vec<Vec<f64>> = models.iter().map(|m| usga_gh(m)).collect();
+        let uo = of2.as_ref().map(|m| usga_gh(m));
+        for (i, r) in USGA.iter().enumerate() {
+            let mut s = format!("  {:<9} {:>5.1}±{:<4.1} {:>4.1}±{:<3.1} {:>4.0}±{:<4.0} {:>5.1} |", r.0, r.1, r.2, r.3, r.4, r.5, r.6, r.7);
+            for (m, u) in models.iter().zip(&us) {
+                s += &format!(" {} {:+6.1} |", m.name, u[i] - r.7);
+            }
+            if let Some(u) = &uo {
+                s += &format!(" OF+2 {:+6.1}", u[i] - r.7);
+            }
+            println!("{s}");
         }
     }
     if flag("--check") {
@@ -281,12 +361,23 @@ fn engines() {
     }
     ours("H2", &H2f { v: 0.2418, d: 0.2475, c: 2.401, lam: 7.08, e: 0.0 }, &dl, &s32, &big);
     ours("공유", &Shared { v: 0.1156, d: 1.7695, c: 2.5881, l: 4.5843 }, &dl, &s32, &big);
-    let u0 = 62859.6581 / flightbench::harness::RE_PER_U;
-    let sre = SharedRe { v: 0.1330, e: 0.3247, u0, d: 1.3688, c: 2.7901, l: 5.9226 };
-    ours("공유+항력위기", &sre, &dl, &s32, &big);
+    ours("공유+항력위기 n=4", &field_n4(), &dl, &s32, &big);
+    let sre = default_field();
+    ours("공유위기12 (기본)", &sre, &dl, &s32, &big);
     // 시험대 수식(models.txt)과 엔진 구현이 같은 장인지: 같은 샷의 캐리 차
-    let m = load_models("[x]\nkd = (v + e/(1 + (Re/r0)^4))*u + d*w*u/(u + l*w)\nkl = c*w*u/(u + l*w)\nv = 0.1330\ne = 0.3247\nr0 = 62859.6581\nd = 1.3688\nc = 2.7901\nl = 5.9226\n").unwrap().remove(0);
+    let src = format!(
+        "[x]\nkd = (v + e/(1 + (Re/r0)^{}))*u + d*w*u/(u + l*w)\nkl = c*w*u/(u + l*w)\nv = {}\ne = {}\nr0 = {}\nd = {}\nc = {}\nl = {}\n",
+        12, sre.v, sre.e, sre.u0 * flightbench::harness::RE_PER_U, sre.d, sre.c, sre.l
+    );
+    let m = load_models(&src).unwrap().remove(0);
     let truth = run(&sre, &dl, 0.0002);
     let dmax = shots.iter().zip(&truth).fold(0.0f64, |a, (s, t)| a.max((m.obs3(s[0], s[1], s[2], s[3])[0] - t.0 * YD).abs()));
-    println!("시험대 수식 대 엔진 구현 (공유+항력위기): 캐리 차 최대 {dmax:.1e} yd");
+    println!("시험대 수식 대 엔진 구현 (공유위기12): 캐리 차 최대 {dmax:.1e} yd");
+    // 여러 코어 처리량: 같은 빠른 엔진을 코어 수만큼 나눠 돌린다
+    let th = std::thread::available_parallelism().map_or(2, |n| n.get());
+    let many: Vec<[f32; 4]> = (0..th * 200_000).map(|i| big[i % big.len()]).collect();
+    let t0 = Instant::now();
+    std::hint::black_box(stream_par(&sre, &many, 0.137, th));
+    let sec = t0.elapsed().as_secs_f64();
+    println!("공유위기12 빠른 엔진, {th}스레드: {:.2e} 샷/초 ({:.1} ns/샷)", many.len() as f64 / sec, sec * 1e9 / many.len() as f64);
 }

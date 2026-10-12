@@ -8,7 +8,6 @@
 //! cargo run --release --bin spininv
 
 use flightbench::engine::{dimless, run, Aero, SharedRe, U_MS, YD};
-use flightbench::harness::RE_PER_U;
 use std::time::Instant;
 
 const G: f64 = 9.81;
@@ -16,7 +15,7 @@ const L: f64 = U_MS * U_MS / G; // 53.53 m
 const TU: f64 = U_MS / G; // 무차원 시간 1 = 2.336 s
 
 fn field() -> SharedRe {
-    SharedRe { v: 0.1330, e: 0.3247, u0: 62859.6581 / RE_PER_U, d: 1.3688, c: 2.7901, l: 5.9226 }
+    flightbench::engine::default_field()
 }
 
 /// p = [x0 y0 z0 (m), 속도 m/s, 발사각 rad, 방위각 rad, rpm, 축 rad] → 프레임 시각들의 위치 (m)

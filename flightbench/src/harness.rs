@@ -261,24 +261,86 @@ impl Tunable for Model {
 /// 상자 제약 레벤버그-마쿼트. 자유 매개변수만 움직인다. 반환: 비용(잔차 제곱합)
 /// w: 캐리·높이·착지각 잔차 가중치 (0 이면 빼기)
 pub fn fit<T: Tunable>(m: &mut T, rows: &[[f64; 6]], w: [f64; 3]) -> f64 {
+    lm(m, &|m: &T| tour_res(m, rows, w))
+}
+
+/// 투어표 세 양 잔차 (가중치 0 인 양은 뺀다)
+fn tour_res<T: Flight + ?Sized>(m: &T, rows: &[[f64; 6]], w: [f64; 3]) -> Vec<f64> {
+    let mut out = Vec::with_capacity(rows.len() * 3);
+    for r in rows {
+        let o = m.obs(r[0], r[1], r[2]);
+        for c in 0..3 {
+            if w[c] > 0.0 {
+                out.push(w[c] * (o[c] - r[3 + c]));
+            }
+        }
+    }
+    out
+}
+
+/// FS 샷 잔차: 캐리 yd, 최고 높이 yd (자료는 ft)
+fn fs_res<T: Flight3 + ?Sized>(m: &T, fs: &[[f64; 6]], wfs: f64, out: &mut Vec<f64>) {
+    for s in fs {
+        let o = m.obs3(s[0], s[1], s[2], s[3]);
+        out.push(wfs * (o[0] - s[4]));
+        out.push(wfs * (o[1] - s[5] / 3.0));
+    }
+}
+
+/// 혼합 맞춤: 투어표 세 양 + FS 샷(사이드 스핀 포함, 캐리·최고 높이)을 함께. wfs 는 FS 잔차 가중치
+pub fn fit_mixed<T: Tunable + Flight3>(m: &mut T, rows: &[[f64; 6]], w: [f64; 3], fs: &[[f64; 6]], wfs: f64) -> f64 {
+    lm(m, &|m: &T| {
+        let mut r = tour_res(m, rows, w);
+        fs_res(m, fs, wfs, &mut r);
+        r
+    })
+}
+
+/// 혼합 자료 k겹 교차검증 (꼴 고르기용). 투어 행과 FS 샷을 각각 i % k 로 나눠 한 겹씩 빼고 맞춘다
+/// (전체 맞춤값에서 시작). 반환 [투어 캐리, 투어 높이, 투어 착지, FS 캐리, FS 높이, 종합(훈련과 같은 가중 RMS)]
+pub fn kfold_mixed(m: &Model, rows: &[[f64; 6]], w: [f64; 3], fs: &[[f64; 6]], wfs: f64, k: usize) -> [f64; 6] {
+    let folds: Vec<(Vec<[f64; 5]>, Vec<[f64; 2]>)> = std::thread::scope(|sc| {
+        let hs: Vec<_> = (0..k)
+            .map(|f| {
+                let m = m.clone();
+                sc.spawn(move || {
+                    let tr: Vec<[f64; 6]> = rows.iter().enumerate().filter(|(i, _)| i % k != f).map(|(_, r)| *r).collect();
+                    let fr: Vec<[f64; 6]> = fs.iter().enumerate().filter(|(i, _)| i % k != f).map(|(_, r)| *r).collect();
+                    let mut mi = m;
+                    fit_mixed(&mut mi, &tr, w, &fr, wfs);
+                    let te: Vec<[f64; 5]> = rows.iter().enumerate().filter(|(i, _)| i % k == f).map(|(_, r)| {
+                        let o = mi.obs(r[0], r[1], r[2]);
+                        [o[0] - r[3], o[1] - r[4], o[2] - r[5], 0.0, 0.0]
+                    }).collect();
+                    let fe: Vec<[f64; 2]> = fs.iter().enumerate().filter(|(i, _)| i % k == f).map(|(_, s)| {
+                        let o = mi.obs3(s[0], s[1], s[2], s[3]);
+                        [o[0] - s[4], o[1] - s[5] / 3.0]
+                    }).collect();
+                    (te, fe)
+                })
+            })
+            .collect();
+        hs.into_iter().map(|h| h.join().unwrap()).collect()
+    });
+    let te: Vec<[f64; 5]> = folds.iter().flat_map(|f| f.0.clone()).collect();
+    let fe: Vec<[f64; 2]> = folds.iter().flat_map(|f| f.1.clone()).collect();
+    let col = |c: usize| rmse(&te.iter().map(|e| e[c]).collect::<Vec<_>>());
+    let fcol = |c: usize| rmse(&fe.iter().map(|e| e[c]).collect::<Vec<_>>());
+    let ss: f64 = te.iter().map(|e| (0..3).map(|c| (w[c] * e[c]).powi(2)).sum::<f64>()).sum::<f64>()
+        + fe.iter().map(|e| (wfs * e[0]).powi(2) + (wfs * e[1]).powi(2)).sum::<f64>();
+    let nres = te.len() * w.iter().filter(|x| **x > 0.0).count() + 2 * fe.len();
+    [col(0), col(1), col(2), fcol(0), fcol(1), (ss / nres as f64).sqrt()]
+}
+
+/// 상자 제약 레벤버그-마쿼트: 잔차 함수 하나를 줄인다. 자유 매개변수만 움직이고, 수가 아닌 잔차는 1e3 으로 둔다.
+pub fn lm<T: Tunable>(m: &mut T, res_raw: &dyn Fn(&T) -> Vec<f64>) -> f64 {
     let mut p = m.get();
     let (lo, hi) = m.bounds();
     let n = p.len();
     if n == 0 {
         return f64::NAN;
     }
-    let res = |m: &T| -> Vec<f64> {
-        let mut out = Vec::with_capacity(rows.len() * 3);
-        for r in rows {
-            let o = m.obs(r[0], r[1], r[2]);
-            for c in 0..3 {
-                if w[c] > 0.0 {
-                    out.push(w[c] * (o[c] - r[3 + c]));
-                }
-            }
-        }
-        out.iter().map(|x| if x.is_finite() { *x } else { 1e3 }).collect()
-    };
+    let res = |m: &T| -> Vec<f64> { res_raw(m).into_iter().map(|x| if x.is_finite() { x } else { 1e3 }).collect() };
     let cost = |r: &[f64]| r.iter().map(|x| x * x).sum::<f64>();
     let mut r = res(m);
     let mut mu = 1e-3;

@@ -21,10 +21,14 @@
 //!   닫힌 꼴을 시작점으로 LM 한 번 (2–9 ms/샷, 격자 탐색 없음): 60 fps 드라이버 5.9 yd·7번 1.4·웨지 0.7,
 //!   240 fps 드라이버 3.1·7번 0.7·웨지 0.35 yd. 격자 66만 후보가 필요 없어진다.
 //!
+//! 2026-10-12 기본 장을 공유위기12 (engine::default_field, 위기 n = 12) 로 바꾼 뒤 같은 설정으로 다시 잼:
+//!   대각 + k_t 보정 드라이버 1.80 yd·±200 rpm, 7번 0.84, 아마7번 0.64, 웨지 0.35 / k_t 모름 드라이버 6.51 yd·±850 rpm
+//!   닫힌 꼴 + LM: 240 fps 드라이버 3.35·7번 0.72·웨지 0.35, 60 fps 6.11·1.36·0.68 / 자가 보정 5샷 ±0.0067, 40샷 ±0.0024
+//!   단단한 벽(WALL=1) LM: 240 fps 2.31·0.60·0.29, 60 fps 4.60·1.09·0.56 yd. 장을 바꿔도 측정 오차는 거의 그대로다.
+//!
 //! cargo run --release --bin screen [몬테카를로 횟수]     AFTER=0.05,0.1,0.15 로 반동 관측 시간 바꾸기, --selfcal
 
 use flightbench::engine::{dimless, run, Aero, SharedRe, U_MS, YD};
-use flightbench::harness::RE_PER_U;
 
 const G: f64 = 9.81;
 const TU: f64 = U_MS / G;
@@ -32,7 +36,7 @@ const R: f64 = 0.021335;
 const NP: usize = 10;
 
 fn field() -> SharedRe {
-    SharedRe { v: 0.1330, e: 0.3247, u0: 62859.6581 / RE_PER_U, d: 1.3688, c: 2.7901, l: 5.9226 }
+    flightbench::engine::default_field()
 }
 
 #[derive(Clone, Copy)]
