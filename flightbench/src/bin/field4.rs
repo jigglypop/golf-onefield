@@ -18,7 +18,6 @@
 //!
 //! cargo run --release --bin field4
 
-use std::hint::black_box;
 use std::time::Instant;
 
 const VEV: f64 = 0.3881;
@@ -396,28 +395,8 @@ impl<const K: usize, const M: usize> FieldModes<K, M> {
 
 // ------------------------------------------------------------------ 보조
 
-struct Rng(u64);
-impl Rng {
-    fn next(&mut self) -> f64 {
-        self.0 ^= self.0 << 13;
-        self.0 ^= self.0 >> 7;
-        self.0 ^= self.0 << 17;
-        (self.0 >> 11) as f64 / (1u64 << 53) as f64
-    }
-    fn uni(&mut self, a: f64, b: f64) -> f64 {
-        a + (b - a) * self.next()
-    }
-}
-
-fn bench<F: FnMut() -> f64>(n: usize, reps: usize, mut f: F) -> f64 {
-    let mut best = f64::INFINITY;
-    for _ in 0..reps {
-        let t0 = Instant::now();
-        black_box(f());
-        best = best.min(t0.elapsed().as_nanos() as f64 / n as f64);
-    }
-    best
-}
+// 난수·측정 도우미는 엔진 모듈의 것 하나를 쓴다 (이 파일에 복사본을 두지 않는다)
+use flightbench::engine::{bench, Rng};
 
 fn stats(e: &[f64]) -> (f64, f64) {
     ((e.iter().map(|x| x * x).sum::<f64>() / e.len() as f64).sqrt(), e.iter().fold(0.0f64, |m, x| m.max(x.abs())))

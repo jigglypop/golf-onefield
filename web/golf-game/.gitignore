@@ -1,0 +1,10 @@
+# 의존성과 빌드 산출물
+node_modules/
+dist/
+
+# scripts/copy-wasm.mjs 가 golf-core/pkg, pkg-simd 에서 복사하는 wasm 묶음 (원본은 golf-core 가 관리)
+src/physics/wasm/
+src/physics/wasm-simd/
+
+# 로그
+*.log

@@ -1,0 +1,1 @@
+C:\dev\golf-onefield\target\wasm-reduction-full\target\wasm32-unknown-unknown\release\golf_core.wasm: C:\dev\golf-onefield\target\wasm-reduction-full\src\ground.rs C:\dev\golf-onefield\target\wasm-reduction-full\src\lanes.rs C:\dev\golf-onefield\target\wasm-reduction-full\src\lib.rs C:\dev\golf-onefield\target\wasm-reduction-full\src\oracle.rs

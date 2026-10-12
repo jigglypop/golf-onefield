@@ -13,6 +13,21 @@ pub enum E {
     F2(u8, Box<E>, Box<E>),
 }
 
+/// x^y. 정수 지수(|y| ≤ 64)는 곱으로 접는 `powi` (빠르고 음수 밑에서도 정의됨; `powf` 와 마지막 몇 비트만 다르다),
+/// 그 밖은 `powf`. 위기 항의 ^4, ^12 처럼 식마다 수만 번 불리는 곳이라 `powf` 의 지수·로그 계산을 피한다.
+#[inline]
+pub fn pow(x: f64, y: f64) -> f64 {
+    if y == 2.0 {
+        x * x
+    } else if y == 3.0 {
+        x * x * x
+    } else if y.fract() == 0.0 && y.abs() <= 64.0 {
+        x.powi(y as i32)
+    } else {
+        x.powf(y)
+    }
+}
+
 impl E {
     #[inline]
     pub fn eval(&self, v: &[f64]) -> f64 {
@@ -27,16 +42,7 @@ impl E {
                     b'-' => x - y,
                     b'*' => x * y,
                     b'/' => x / y,
-                    _ => {
-                        // 정수 지수는 곱으로 (빠르고 음수 밑에서도 정의됨)
-                        if y == 2.0 {
-                            x * x
-                        } else if y == 3.0 {
-                            x * x * x
-                        } else {
-                            x.powf(y)
-                        }
-                    }
+                    _ => pow(x, y),
                 }
             }
             E::F1(f, a) => {
@@ -55,7 +61,7 @@ impl E {
                 match f {
                     0 => x.min(y),
                     1 => x.max(y),
-                    _ => x.powf(y),
+                    _ => pow(x, y),
                 }
             }
         }
@@ -185,5 +191,27 @@ mod tests {
         assert!((e.eval(&[3.0, 2.0]) - (6.0 + 4.0 - 2.0 + 2.0 + 0.1)).abs() < 1e-12);
         let e = parse("-u^2", &n).unwrap();
         assert_eq!(e.eval(&[3.0, 0.0]), -9.0);
+    }
+
+    /// 정수 지수의 powi 길은 powf 와 마지막 몇 비트만 다르다 (상대 4e-15 이내), 음수 밑·음수 지수·0 도 같은 값
+    #[test]
+    fn integer_pow_matches_powf() {
+        for &y in &[4.0f64, 5.0, 6.0, 12.0, 16.0, -2.0, -4.0, 1.0, 0.0, 64.0] {
+            for i in 0..400 {
+                let x = 0.05 + 0.025 * i as f64;
+                let (a, b) = (pow(x, y), x.powf(y));
+                assert!(((a - b) / b).abs() < 4e-15, "{x}^{y}: {a} 대 {b}");
+                let (a, b) = (pow(-x, y), (-x).powf(y)); // 음수 밑
+                assert!(((a - b) / b).abs() < 4e-15, "(-{x})^{y}: {a} 대 {b}");
+            }
+        }
+        assert_eq!(pow(0.0, 12.0), 0.0);
+        assert!(pow(0.0, -2.0).is_infinite());
+        assert_eq!(pow(2.0, 0.5), 2f64.powf(0.5)); // 정수가 아니면 powf 그대로
+        // 식 해석기에서도 같은 길
+        let n: Vec<String> = ["Re"].iter().map(|s| s.to_string()).collect();
+        let e = parse("(Re/76621.4458)^12", &n).unwrap();
+        let x: f64 = 60000.0 / 76621.4458;
+        assert!(((e.eval(&[60000.0]) - x.powf(12.0)) / x.powf(12.0)).abs() < 4e-15);
     }
 }

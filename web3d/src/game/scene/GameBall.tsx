@@ -7,13 +7,14 @@ import { useEffect, useMemo, useRef } from 'react';
 
 import { useThree } from '@react-three/fiber';
 import { useEngineFrame } from 'gaesup-world';
-import { DoubleSide, Vector3, type Group, type Mesh } from 'three';
+import { DoubleSide, Vector2, Vector3, type Group, type Mesh } from 'three';
 
 import { positionAt } from '../../engine/flight.ts';
 import { R_BALL } from '../../engine/units.ts';
 import { COLORS } from '../../scene/layout.ts';
 import { Tracer } from '../../scene/tracer.ts';
 import type { GroundSample } from '../ground.ts';
+import { ballDimples } from '../../photo/surfaces.ts';
 import { advanceShot, game, holeOf, shotClock, useGame } from '../round.ts';
 import { BALL_LIFT } from './HoleScene.tsx';
 
@@ -58,6 +59,7 @@ export function GameBall() {
   }, [shot]);
   useEffect(() => () => tracer?.dispose(), [tracer]);
   const scratch = useMemo(() => ({ p: { x: 0, y: 0, z: 0 }, cam: new Vector3(), head: new Vector3(), hint: 0, gh: { i: 0 } }), []);
+  const dimples = useMemo(() => ballDimples(), []);
 
   useEngineFrame(
     'lateUpdate',
@@ -99,7 +101,8 @@ export function GameBall() {
         const pxScale = ((2 * Math.tan(fov / 2)) / Math.max(1, three.size.height)) * TRACER_PX;
         scratch.cam.copy(cam.position);
         const flying = s.phase === 'flight' && s.shot?.id === sh.id;
-        const upto = flying ? Math.floor(t * 120) : tracer.count - 1;
+        // t < 0 은 스윙 중 (임팩트 전): 공은 제자리, 궤적 선은 아직 없다
+        const upto = flying ? Math.max(0, Math.floor(t * 120)) : tracer.count - 1;
         tracer.update(scratch.cam, upto, flying ? scratch.head.set(ballPos.x, ballPos.y, ballPos.z) : null, pxScale);
       }
     },
@@ -109,8 +112,8 @@ export function GameBall() {
   return (
     <group name="golf-game-ball" userData={{ intangible: true }}>
       <mesh ref={ball} castShadow>
-        <sphereGeometry args={[1, 24, 16]} />
-        <meshStandardMaterial color="#ffffff" roughness={0.35} emissive="#ffffff" emissiveIntensity={0.18} />
+        <sphereGeometry args={[1, 48, 32]} />
+        <meshStandardMaterial color="#ffffff" normalMap={dimples} normalScale={new Vector2(1.3, 1.3)} roughness={0.42} emissive="#ffffff" emissiveIntensity={0.16} />
       </mesh>
       {tracer && (
         <group ref={trail}>

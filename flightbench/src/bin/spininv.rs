@@ -7,7 +7,10 @@
 //!
 //! cargo run --release --bin spininv
 
-use flightbench::engine::{dimless, run, Aero, SharedRe, U_MS, YD};
+use flightbench::engine::{dimless, run, Aero, Rng, SharedRe, U_MS, YD};
+use flightbench::linalg::solve;
+use flightbench::lm::{lm, Damping, LmCfg, Step};
+use flightbench::util::{arg, launch_from_quad, prior_rpm, project, quad_coeffs, read_csv};
 use std::time::Instant;
 
 const G: f64 = 9.81;
@@ -59,30 +62,10 @@ fn carry(ae: &SharedRe, p: &[f64; 8]) -> f64 {
     run(ae, &[[d[0], d[1], d[2], p[7]]], 0.004)[0].0 * YD
 }
 
-fn solve(mut a: Vec<Vec<f64>>) -> Vec<f64> {
-    let n = a.len();
-    for c in 0..n {
-        let p = (c..n).max_by(|&i, &j| a[i][c].abs().total_cmp(&a[j][c].abs())).unwrap();
-        a.swap(c, p);
-        for r in 0..n {
-            if r != c {
-                let f = a[r][c] / a[c][c];
-                for k in c..=n {
-                    a[r][k] -= f * a[c][k];
-                }
-            }
-        }
-    }
-    (0..n).map(|i| a[i][n] / a[i][i]).collect()
-}
-
-/// 사전분포: 투어 23행 회귀 rpm ≈ 2233 + 303.7 발사각(deg) - 9.91 볼스피드(mph) (잔차 940 rpm), 폭 1500 rpm.
+/// 사전분포: 투어 23행 회귀 rpm ≈ 2233 + 303.7 발사각(deg) - 9.91 볼스피드(mph) (잔차 940 rpm; `util::prior_rpm`), 폭 1500 rpm.
 /// 축은 0 ± 20°. 관측이 짧아 스핀이 안 보이면 맞춤이 이 값으로 돌아온다(폭주하지 않는다).
 pub const PRIOR_SD: f64 = 1500.0;
 pub const AXIS_SD: f64 = 20.0;
-fn prior_rpm(mph: f64, deg: f64) -> f64 {
-    (2233.36 + 303.69 * deg - 9.909 * mph).clamp(1500.0, 11000.0)
-}
 
 /// 가중 잔차 (각 축 노이즈로 나눔) + 사전분포 두 줄
 fn resid(ae: &SharedRe, p: &[f64; 8], obs: &[[f64; 3]], sig: [f64; 3], fdt: f64, prior: f64) -> Vec<f64> {
@@ -100,84 +83,26 @@ fn resid(ae: &SharedRe, p: &[f64; 8], obs: &[[f64; 3]], sig: [f64; 3], fdt: f64,
     r
 }
 
-/// 레벤버그-마쿼트. 반환 (매개변수, 카이제곱, 공분산 대각)
+/// 레벤버그-마쿼트 (공통 구현 lm.rs). 반환 (매개변수, 카이제곱, 공분산 대각)
 fn fit(ae: &SharedRe, p0: [f64; 8], obs: &[[f64; 3]], sig: [f64; 3], fdt: f64, prior: f64) -> ([f64; 8], f64, [f64; 8]) {
     let step = [1e-4, 1e-4, 1e-4, 1e-3, 1e-5, 1e-5, 1.0, 1e-4];
     let lo = [-1.0, -1.0, -1.0, 5.0, -0.2, -1.0, 0.0, -1.2];
     let hi = [1.0, 1.0, 1.0, 100.0, 1.2, 1.0, 15000.0, 1.2];
-    let cost = |r: &[f64]| r.iter().map(|x| x * x).sum::<f64>();
-    let mut p = p0;
-    let mut r = resid(ae, &p, obs, sig, fdt, prior);
-    let mut mu = 1e-3;
-    let mut jtj = vec![vec![0.0; 8]; 8];
-    for _ in 0..60 {
-        let mut jac = vec![[0.0f64; 8]; r.len()];
-        for k in 0..8 {
-            let mut q = p;
-            q[k] += step[k];
-            let rq = resid(ae, &q, obs, sig, fdt, prior);
-            for i in 0..r.len() {
-                jac[i][k] = (rq[i] - r[i]) / step[k];
-            }
-        }
-        jtj = vec![vec![0.0; 8]; 8];
-        let mut jtr = vec![0.0; 8];
-        for i in 0..r.len() {
-            for a in 0..8 {
-                jtr[a] += jac[i][a] * r[i];
-                for b in 0..8 {
-                    jtj[a][b] += jac[i][a] * jac[i][b];
-                }
-            }
-        }
-        let mut improved = false;
-        for _ in 0..12 {
-            let mut a: Vec<Vec<f64>> = (0..8).map(|x| { let mut row = jtj[x].clone(); row[x] *= 1.0 + mu; row[x] += 1e-12; row.push(-jtr[x]); row }).collect();
-            let dp = solve(std::mem::take(&mut a));
-            let q: [f64; 8] = std::array::from_fn(|k| (p[k] + dp[k]).clamp(lo[k], hi[k]));
-            let rq = resid(ae, &q, obs, sig, fdt, prior);
-            if cost(&rq) < cost(&r) {
-                let rel = (cost(&r) - cost(&rq)) / cost(&r).max(1e-30);
-                p = q;
-                r = rq;
-                mu = (mu * 0.3).max(1e-10);
-                improved = true;
-                if rel < 1e-10 {
-                    break;
-                }
-                break;
-            }
-            mu *= 10.0;
-        }
-        if !improved {
-            break;
-        }
-    }
+    // 고정 야코비안 걸음, 감쇠 A_xx(1+μ)+1e-12, 60회 × 안쪽 12번. 개선이 작아도 바깥 반복을 끊지 않는다(stop_rel < 0)
+    let cfg = LmCfg { lo: &lo, hi: &hi, step: Step::Fixed(&step), damping: Damping::Mul, max_iter: 60, tries: 12, mu_min: 1e-10, stop_rel: -1.0, nonfinite_cost: None };
+    let mut res = |q: &[f64]| resid(ae, &<[f64; 8]>::try_from(q).unwrap(), obs, sig, fdt, prior);
+    let o = lm(&cfg, &p0, &mut res, None);
     // 공분산 = (J^T J)^-1 의 대각 (노이즈로 정규화했으므로 그대로)
     let mut cov = [0.0; 8];
     for k in 0..8 {
-        let mut a: Vec<Vec<f64>> = jtj.iter().map(|row| { let mut r = row.clone(); r.push(0.0); r }).collect();
+        let mut a: Vec<Vec<f64>> = o.jtj.iter().map(|row| { let mut r = row.clone(); r.push(0.0); r }).collect();
         a[k][8] = 1.0;
         for x in 0..8 {
             a[x][x] += 1e-12;
         }
         cov[k] = solve(a)[k];
     }
-    (p, cost(&r), cov)
-}
-
-struct Rng(u64);
-impl Rng {
-    fn u(&mut self) -> f64 {
-        self.0 ^= self.0 << 13;
-        self.0 ^= self.0 >> 7;
-        self.0 ^= self.0 << 17;
-        (self.0 >> 11) as f64 / (1u64 << 53) as f64
-    }
-    fn g(&mut self) -> f64 {
-        let (a, b) = (self.u().max(1e-300), self.u());
-        (-2.0 * a.ln()).sqrt() * (std::f64::consts::TAU * b).cos()
-    }
+    (<[f64; 8]>::try_from(o.p.as_slice()).unwrap(), o.cost, cov)
 }
 
 /// 노이즈 없는 앞 몇 프레임의 2차 맞춤으로 처음 속도를 어림 (맞춤 시작점)
@@ -186,68 +111,10 @@ fn initial_guess(obs: &[[f64; 3]], fdt: f64, rpm0: f64) -> [f64; 8] {
     // 각 축 x(t) = a + b t + c t^2 최소제곱
     let mut coef = [[0.0; 3]; 3];
     for c in 0..3 {
-        let mut a = vec![vec![0.0; 4]; 3];
-        for &k in &ks {
-            let t = k as f64 * fdt;
-            let b = [1.0, t, t * t];
-            for i in 0..3 {
-                for j in 0..3 {
-                    a[i][j] += b[i] * b[j];
-                }
-                a[i][3] += b[i] * obs[k][c];
-            }
-        }
-        let s = solve(a);
-        coef[c] = [s[0], s[1], s[2]];
+        coef[c] = quad_coeffs(obs, fdt, c, &ks);
     }
-    let (vx, vy, vz) = (coef[0][1], coef[1][1], coef[2][1]);
-    let v = (vx * vx + vy * vy + vz * vz).sqrt();
-    [coef[0][0], coef[1][0], coef[2][0], v, (vy / v).asin(), vz.atan2(vx), rpm0, 0.0]
-}
-
-/// CSV (t,x,y,z 미터·초; x 앞, y 위, z 오른쪽) → 프레임 배열 (빠진 프레임 NaN), 프레임 간격
-/// 옆 카메라 투영 [xc, yc, Z0, sgn]: 평면 밖으로 z 만큼 나온 점이 화면 평면에 비치는 위치
-static CAM: std::sync::OnceLock<[f64; 4]> = std::sync::OnceLock::new();
-#[inline]
-fn project(p: [f64; 3]) -> [f64; 3] {
-    match CAM.get() {
-        Some(c) => {
-            let s = c[2] / (c[2] + c[3] * p[2]);
-            [c[0] + (p[0] - c[0]) * s, c[1] + (p[1] - c[1]) * s, p[2]]
-        }
-        None => p,
-    }
-}
-
-fn read_csv(path: &str) -> (Vec<[f64; 3]>, f64) {
-    let rows: Vec<[f64; 4]> = std::fs::read_to_string(path).expect("CSV 읽기").lines()
-        .filter(|l| !l.trim_start().starts_with('#'))
-        .filter_map(|l| { let v: Vec<f64> = l.split(|c| c == ',' || c == ' ' || c == '\t').filter(|x| !x.is_empty()).filter_map(|x| x.parse().ok()).collect(); (v.len() >= 4).then(|| [v[0], v[1], v[2], v[3]]) })
-        .collect();
-    assert!(rows.len() >= 5, "프레임이 5개 이상 필요");
-    // "# cam xc yc Z0 sgn": 카메라 투영 (track_ball.py 가 씀)
-    if let Some(l) = std::fs::read_to_string(path).unwrap().lines().find(|l| l.starts_with("# cam")) {
-        let v: Vec<f64> = l[5..].split_whitespace().filter_map(|x| x.parse().ok()).collect();
-        if v.len() == 4 {
-            let _ = CAM.set([v[0], v[1], v[2], v[3]]);
-            eprintln!("카메라 투영 사용: 축 위치 ({:.3}, {:.3}) m, 거리 {:.3} m", v[0], v[1], v[2]);
-        }
-    }
-    let mut dts: Vec<f64> = rows.windows(2).map(|w| w[1][0] - w[0][0]).filter(|d| *d > 0.0).collect();
-    dts.sort_by(f64::total_cmp);
-    let fdt = dts[dts.len() / 2];
-    let n = ((rows.last().unwrap()[0] - rows[0][0]) / fdt).round() as usize + 1;
-    let mut obs = vec![[f64::NAN; 3]; n];
-    for r in &rows {
-        let k = ((r[0] - rows[0][0]) / fdt).round() as usize;
-        if k < n { obs[k] = [r[1], r[2], r[3]]; }
-    }
-    (obs, fdt)
-}
-
-fn arg(name: &str) -> Option<String> {
-    let a: Vec<String> = std::env::args().collect();
-    a.iter().position(|x| x == name).and_then(|i| a.get(i + 1).cloned())
+    let l = launch_from_quad(&coef);
+    [l[0], l[1], l[2], l[3], l[4], l[5], rpm0, 0.0]
 }
 
 fn main() {
@@ -323,7 +190,7 @@ fn main() {
                         let mut rng = Rng(0x9E3779B97F4A7C15 ^ ((win * 1e4) as u64) ^ ((sg * 1e6) as u64) << 20);
                         let (mut es, mut ea, mut ec, mut sdc) = (0.0, 0.0, 0.0, 0.0);
                         for _ in 0..mc {
-                            let obs: Vec<[f64; 3]> = clean.iter().map(|p| [p[0] + sig[0] * rng.g(), p[1] + sig[1] * rng.g(), p[2] + sig[2] * rng.g()]).collect();
+                            let obs: Vec<[f64; 3]> = clean.iter().map(|p| [p[0] + sig[0] * rng.gauss(), p[1] + sig[1] * rng.gauss(), p[2] + sig[2] * rng.gauss()]).collect();
                             // 시작점 세 개 (스핀 2000 / 5000 / 9000), 카이제곱 최소
                             let mut best = ([0.0; 8], f64::INFINITY, [0.0; 8]);
                             let g0 = initial_guess(&obs, fdt, 0.0);

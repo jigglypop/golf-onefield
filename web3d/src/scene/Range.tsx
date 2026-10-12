@@ -2,15 +2,18 @@
  * 연습장: 러프(넓은 땅), 페어웨이 줄무늬, 티, 50 yd 마다 거리 선과 표지판, 핀이 꽂힌 그린, 둘레 나무.
  * 땅 위에 겹친 판은 높이를 조금씩 띄우고 polygonOffset 으로 z-fighting 을 막는다.
  */
-import { useEffect, useLayoutEffect, useMemo, useRef } from 'react';
+import { useEffect, useMemo } from 'react';
 
 import { CuboidCollider, RigidBody } from '@react-three/rapier';
-import { CircleGeometry, Color, DoubleSide, Matrix4, Object3D, PlaneGeometry, Quaternion, RingGeometry, Shape, ShapeGeometry, Vector3, type InstancedMesh } from 'three';
+import { CircleGeometry, DoubleSide, PlaneGeometry, RingGeometry, Shape, ShapeGeometry, Vector2 } from 'three';
 
 import { useApp } from '../state.ts';
 import { Label } from './Label.tsx';
 import { COLORS, FAIRWAY, GREEN_RADIUS, LINE_LENGTH, MARKER_COLORS, MARKERS_YD, ydToM } from './layout.ts';
-import { grassTexture, stripeTexture } from './textures.ts';
+import { Forest } from '../photo/Forest.tsx';
+import { LAWN_TILE_M, lawnMaps, mowStripes, repeated, tiled } from '../photo/surfaces.ts';
+import { RANGE_HOLE } from '../photo/rangeHole.ts';
+import { Terrain } from '../photo/Terrain.tsx';
 
 const flat = (g: PlaneGeometry | CircleGeometry | RingGeometry | ShapeGeometry) => g.rotateX(-Math.PI / 2);
 
@@ -38,36 +41,32 @@ export function RangeColliders() {
   );
 }
 
-function Ground() {
-  const texture = useMemo(() => grassTexture(COLORS.rough, [500, 500]), []);
-  const geometry = useMemo(() => flat(new PlaneGeometry(4000, 4000)), []);
-  useEffect(() => () => (texture.dispose(), geometry.dispose()), [texture, geometry]);
-  return (
-    <mesh geometry={geometry} position={[300, 0, 0]} receiveShadow>
-      <meshStandardMaterial map={texture} roughness={1} metalness={0} />
-    </mesh>
-  );
-}
-
 function Fairway() {
   const geometry = useMemo(() => flat(new ShapeGeometry(roundedRect(FAIRWAY.x0, FAIRWAY.x1, FAIRWAY.width / 2, 16), 12)), []);
-  // ShapeGeometry 의 uv = 꼭짓점 (x, y) m. 줄무늬 한 쌍 = 24 m
-  const texture = useMemo(() => stripeTexture(COLORS.fairwayLight, COLORS.fairwayDark, [1 / 24, 1 / 24]), []);
-  useEffect(() => () => (texture.dispose(), geometry.dispose()), [texture, geometry]);
+  // ShapeGeometry 의 uv = 꼭짓점 (x, y) m. 잔디 질감 한 장 = 1.6 m, 줄무늬 한 쌍 = 24 m
+  const maps = useMemo(() => tiled(lawnMaps('fairway'), 1 / LAWN_TILE_M.fairway, 1 / LAWN_TILE_M.fairway), []);
+  const stripes = useMemo(() => repeated(mowStripes(), 1 / 24, 1), []);
+  useEffect(() => () => geometry.dispose(), [geometry]);
   return (
-    <mesh geometry={geometry} position={[0, 0.03, 0]} receiveShadow>
-      <meshStandardMaterial map={texture} roughness={0.95} polygonOffset polygonOffsetFactor={-1} polygonOffsetUnits={-2} />
-    </mesh>
+    <group>
+      <mesh geometry={geometry} position={[0, 0.03, 0]} receiveShadow>
+        <meshStandardMaterial map={maps.map} normalMap={maps.normalMap} normalScale={new Vector2(1.1, 1.1)} color="#f4fbe8" roughness={0.9} polygonOffset polygonOffsetFactor={-1} polygonOffsetUnits={-2} />
+      </mesh>
+      <mesh geometry={geometry} position={[0, 0.0305, 0]}>
+        <meshBasicMaterial map={stripes} transparent depthWrite={false} polygonOffset polygonOffsetFactor={-1.2} polygonOffsetUnits={-2.4} />
+      </mesh>
+    </group>
   );
 }
 
 function Tee() {
   const geometry = useMemo(() => flat(new ShapeGeometry(roundedRect(-6, 5, 7, 1.5), 4)), []);
+  const maps = useMemo(() => tiled(lawnMaps('tee'), 1 / LAWN_TILE_M.tee, 1 / LAWN_TILE_M.tee), []);
   useEffect(() => () => geometry.dispose(), [geometry]);
   return (
     <group>
       <mesh geometry={geometry} position={[0, 0.035, 0]} receiveShadow>
-        <meshStandardMaterial color={COLORS.tee} roughness={0.95} polygonOffset polygonOffsetFactor={-1} polygonOffsetUnits={-2} />
+        <meshStandardMaterial map={maps.map} normalMap={maps.normalMap} normalScale={new Vector2(0.9, 0.9)} color="#e6f2d6" roughness={0.9} polygonOffset polygonOffsetFactor={-1} polygonOffsetUnits={-2} />
       </mesh>
       {/* 티 마커 */}
       {[-3.2, 3.2].map((z) => (
@@ -130,22 +129,30 @@ function Green() {
     const end = s.shot.result.samples[s.shot.result.samples.length - 1]!;
     return Math.hypot(end.x - ydToM(s.pinYd), end.z) < 20;
   });
-  const geo = useMemo(
-    () => ({
-      green: flat(new CircleGeometry(GREEN_RADIUS, 64)),
-      fringe: flat(new RingGeometry(GREEN_RADIUS, GREEN_RADIUS + 2.5, 64)),
+  const geo = useMemo(() => {
+    const scaleUv = (g: CircleGeometry | RingGeometry, r: number) => {
+      const p = g.getAttribute('position');
+      const uv = g.getAttribute('uv');
+      for (let i = 0; i < uv.count; i++) uv.setXY(i, p.getX(i) / 1, p.getY(i) / 1); // 만들 때 xy 평면: uv = m (위에서 눕힌다)
+      void r;
+      return g;
+    };
+    return {
+      green: flat(scaleUv(new CircleGeometry(GREEN_RADIUS, 64), GREEN_RADIUS)),
+      fringe: flat(scaleUv(new RingGeometry(GREEN_RADIUS, GREEN_RADIUS + 2.5, 64), GREEN_RADIUS)),
       hole: flat(new CircleGeometry(0.11, 24)),
-    }),
-    [],
-  );
+    };
+  }, []);
+  const greenMaps = useMemo(() => tiled(lawnMaps('green'), 1 / LAWN_TILE_M.green, 1 / LAWN_TILE_M.green), []);
+  const fringeMaps = useMemo(() => tiled(lawnMaps('fairway'), 1 / LAWN_TILE_M.fairway, 1 / LAWN_TILE_M.fairway), []);
   useEffect(() => () => Object.values(geo).forEach((g) => g.dispose()), [geo]);
   return (
     <group position={[x, 0, 0]}>
       <mesh geometry={geo.fringe} position={[0, 0.045, 0]} receiveShadow>
-        <meshStandardMaterial color={COLORS.fringe} roughness={0.95} polygonOffset polygonOffsetFactor={-2} polygonOffsetUnits={-3} />
+        <meshStandardMaterial map={fringeMaps.map} normalMap={fringeMaps.normalMap} normalScale={new Vector2(1.1, 1.1)} color="#e6f3d4" roughness={0.92} polygonOffset polygonOffsetFactor={-2} polygonOffsetUnits={-3} />
       </mesh>
       <mesh geometry={geo.green} position={[0, 0.05, 0]} receiveShadow>
-        <meshStandardMaterial color={COLORS.green} roughness={0.85} polygonOffset polygonOffsetFactor={-2} polygonOffsetUnits={-4} />
+        <meshStandardMaterial map={greenMaps.map} normalMap={greenMaps.normalMap} normalScale={new Vector2(0.7, 0.7)} color="#ffffff" roughness={0.8} polygonOffset polygonOffsetFactor={-2} polygonOffsetUnits={-4} />
       </mesh>
       <mesh geometry={geo.hole} position={[0, 0.07, 0]}>
         <meshBasicMaterial color="#10160f" polygonOffset polygonOffsetFactor={-3} polygonOffsetUnits={-6} />
@@ -164,71 +171,15 @@ function Green() {
   );
 }
 
-/** 둘레 나무: 원뿔 + 줄기, 인스턴스 두 묶음 */
-function Trees() {
-  const crowns = useRef<InstancedMesh>(null);
-  const trunks = useRef<InstancedMesh>(null);
-  const spots = useMemo(() => {
-    const out: { x: number; z: number; h: number; r: number; tint: number }[] = [];
-    let s = 12345;
-    const rnd = () => ((s = (s * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff);
-    for (let x = -60; x <= 470; x += 9) {
-      for (const side of [-1, 1]) {
-        const z = side * (78 + rnd() * 70);
-        out.push({ x: x + rnd() * 6, z, h: 8 + rnd() * 8, r: 2.4 + rnd() * 2, tint: rnd() });
-      }
-    }
-    for (let z = -160; z <= 160; z += 8) out.push({ x: 450 + rnd() * 60, z: z + rnd() * 5, h: 9 + rnd() * 9, r: 2.6 + rnd() * 2, tint: rnd() });
-    return out;
-  }, []);
-  useLayoutEffect(() => {
-    const c = crowns.current;
-    const t = trunks.current;
-    if (!c || !t) return;
-    const m = new Matrix4();
-    const q = new Quaternion();
-    const o = new Object3D();
-    const dark = new Color('#2f5a2a');
-    const light = new Color('#4d7d34');
-    const col = new Color();
-    spots.forEach((p, i) => {
-      m.compose(new Vector3(p.x, 1.6 + p.h / 2, p.z), q, new Vector3(p.r, p.h, p.r));
-      c.setMatrixAt(i, m);
-      c.setColorAt(i, col.copy(dark).lerp(light, p.tint));
-      o.position.set(p.x, 1, p.z);
-      o.scale.set(0.35, 2, 0.35);
-      o.updateMatrix();
-      t.setMatrixAt(i, o.matrix);
-    });
-    c.instanceMatrix.needsUpdate = true;
-    if (c.instanceColor) c.instanceColor.needsUpdate = true;
-    t.instanceMatrix.needsUpdate = true;
-    c.computeBoundingSphere();
-    t.computeBoundingSphere();
-  }, [spots]);
-  return (
-    <group>
-      <instancedMesh ref={crowns} args={[undefined, undefined, spots.length]} castShadow>
-        <coneGeometry args={[1, 1, 8]} />
-        <meshStandardMaterial roughness={0.9} />
-      </instancedMesh>
-      <instancedMesh ref={trunks} args={[undefined, undefined, spots.length]} castShadow>
-        <cylinderGeometry args={[0.5, 0.6, 1, 6]} />
-        <meshStandardMaterial color="#6b4a2f" roughness={0.9} />
-      </instancedMesh>
-    </group>
-  );
-}
-
 export function Range() {
   return (
     <group name="golf-range">
-      <Ground />
+      <Terrain hole={RANGE_HOLE} />
       <Fairway />
       <Tee />
       <DistanceMarkers />
       <Green />
-      <Trees />
+      <Forest hole={RANGE_HOLE} />
     </group>
   );
 }

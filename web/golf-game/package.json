@@ -1,0 +1,35 @@
+{
+  "name": "golf-game",
+  "private": true,
+  "version": "0.1.0",
+  "description": "골프 한 홀 프로토타입: R3F + gaesup-world 캐릭터, 볼 비행은 Rust(wasm) 코어",
+  "type": "module",
+  "scripts": {
+    "copy-wasm": "node scripts/copy-wasm.mjs",
+    "predev": "node scripts/copy-wasm.mjs",
+    "dev": "vite",
+    "prebuild": "node scripts/copy-wasm.mjs",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "check:physics": "node scripts/check-physics.mjs"
+  },
+  "dependencies": {
+    "@react-three/drei": "10.7.9",
+    "@react-three/fiber": "9.8.1",
+    "@react-three/postprocessing": "3.2.0",
+    "@react-three/rapier": "2.2.0",
+    "gaesup-world": "1.7.0",
+    "react": "19.3.0",
+    "react-dom": "19.3.0",
+    "three": "0.186.1",
+    "three-stdlib": "2.36.1"
+  },
+  "devDependencies": {
+    "@types/react": "19.3.0",
+    "@types/react-dom": "19.3.0",
+    "@types/three": "0.186.0",
+    "@vitejs/plugin-react": "6.1.2",
+    "typescript": "~5.9.3",
+    "vite": "8.3.4"
+  }
+}

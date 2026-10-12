@@ -106,7 +106,7 @@ export function launchShot(input?: ShotInput): Shot | null {
 // 브라우저 시험(scripts/smoke.mjs)과 콘솔 디버깅용 읽기 창
 declare global {
   interface Window {
-    __golf?: { state: () => AppState; clock: () => number; player: () => { x: number; y: number; z: number }; game?: unknown };
+    __golf?: { state: () => AppState; clock: () => number; player: () => { x: number; y: number; z: number }; game?: unknown; vis?: unknown };
   }
 }
 if (typeof window !== 'undefined') {

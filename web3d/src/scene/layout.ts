@@ -26,8 +26,8 @@ export const GREEN_RADIUS = 14;
 /** 캐릭터 시작 위치: 오른손 골퍼가 공 왼쪽(−z)에 서서 공(+z)을 본다 */
 export const SPAWN: [number, number, number] = [-0.2, 1.0, -1.15];
 
-/** 해 방향 (빛 위치, 방향만 쓴다): 티 뒤 왼쪽 높이 */
-export const SUN_POSITION: [number, number, number] = [-45, 80, -35];
+/** 해 방향 (빛 위치, 방향만 쓴다): 앞 왼쪽 낮은 오후 해 (고도 약 27°). 나무 그림자가 페어웨이를 가로지르고 능선이 역광으로 떠 보인다 */
+export const SUN_POSITION: [number, number, number] = [130, 75, -65];
 
 export const COLORS = {
   rough: '#5c8f3c',
@@ -37,9 +37,9 @@ export const COLORS = {
   green: '#93d86c',
   fringe: '#7cbf54',
   line: '#f4f4ee',
-  skyZenith: '#3f86d8',
-  skyHorizon: '#cfe5f4',
-  fog: '#d4e7f2',
+  skyZenith: '#2f78cf',
+  skyHorizon: '#d6e5ef',
+  fog: '#cddbe6',
   tracer: '#ff6a2a',
   landing: '#ffd23f',
 } as const;

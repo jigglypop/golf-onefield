@@ -1,0 +1,88 @@
+{
+  "node": "v24.15.0",
+  "flags": "-C target-feature=+simd128; wasm-pack --target web --release; opt-level=3, fat LTO, codegen-units=1",
+  "meta": [
+    {
+      "path": "target/wasm-reduction-full/pkg-full/golf_core_bg.wasm",
+      "bytes": 121402,
+      "gzipBytes": 37319,
+      "jsBytes": 19601,
+      "jsGzipBytes": 4794,
+      "sha256": "2694a7226d1dae1eabbe12828b6d8150a792d89e9b2be5bd094a18e30bada5b7",
+      "exports": [
+        "memory",
+        "__wbg_flight_free",
+        "app_min_steps",
+        "app_step",
+        "batch",
+        "batch_env",
+        "batch_env_opts",
+        "batch_opts",
+        "batch_simd",
+        "batch_simd_env",
+        "batch_simd_env_opts",
+        "batch_simd_opts",
+        "default_step",
+        "field",
+        "flight_apex_m",
+        "flight_carry_m",
+        "flight_carry_yd",
+        "flight_land_deg",
+        "flight_land_mph",
+        "flight_lateral_m",
+        "flight_path",
+        "flight_roll_yd",
+        "flight_steps",
+        "flight_time_s",
+        "flight_total_reliable",
+        "flight_total_yd",
+        "fly_env",
+        "fly_f32",
+        "fly_f64",
+        "fly_flat",
+        "has_simd",
+        "set_field",
+        "__abort_handler",
+        "__instance_terminated",
+        "__wbindgen_externrefs",
+        "__wbindgen_malloc",
+        "__wbindgen_free",
+        "__wbindgen_start"
+      ]
+    },
+    {
+      "path": "target/wasm-reduction-probe/pkg-minimal/golf_core_bg.wasm",
+      "bytes": 47900,
+      "gzipBytes": 17122,
+      "jsBytes": 4927,
+      "jsGzipBytes": 1502,
+      "sha256": "44562813008c144ff0801c2dc3e532c072430004f036968f32480294ad13802a",
+      "exports": [
+        "memory",
+        "mini_batch",
+        "__abort_handler",
+        "__instance_terminated",
+        "__wbindgen_externrefs",
+        "__wbindgen_malloc",
+        "__wbindgen_free",
+        "__wbindgen_start"
+      ]
+    }
+  ],
+  "comparisons": [
+    {
+      "h": 0.05,
+      "n": 4000,
+      "outputElements": 16000,
+      "mismatch": 0,
+      "maxAbs": 0
+    },
+    {
+      "h": 0.137,
+      "n": 4000,
+      "outputElements": 16000,
+      "mismatch": 0,
+      "maxAbs": 0
+    }
+  ]
+}

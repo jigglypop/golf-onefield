@@ -80,6 +80,10 @@ export function MiniMap() {
       {shapes.bunkers.map((d, i) => (
         <path key={`b${i}`} d={d} fill="#e2cf9b" />
       ))}
+      {(h.trees ?? []).map((t, i) => {
+        const [tx, ty] = map([t.x, t.z]);
+        return <circle key={`t${i}`} cx={tx} cy={ty} r={Math.max(2, t.r * k)} fill="#2f5a2a" stroke="#1d3a1a" strokeWidth={0.6} />;
+      })}
       {h.kind !== 'longdrive' && (
         <g>
           <circle cx={px} cy={py} r={2} fill="#111" />

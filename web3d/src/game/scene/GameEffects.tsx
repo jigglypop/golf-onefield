@@ -8,7 +8,7 @@ import { useEngineFrame } from 'gaesup-world';
 import { Color, Object3D, type InstancedMesh } from 'three';
 
 import type { Surface } from '../course.ts';
-import { game, holeOf } from '../round.ts';
+import { game, holeOf, shotClock } from '../round.ts';
 
 const MAX = 420;
 
@@ -32,6 +32,7 @@ const DUST: Partial<Record<Surface, string[]>> = {
   rough: ['#5c8f3c', '#7a5a35', '#6e9e45'],
 };
 const GRASS = ['#86c556', '#6c4f30', '#9bd36b'];
+const LEAVES = ['#3f7a34', '#5a9a3f', '#2f5a2a', '#7aa84a'];
 const CONFETTI = ['#ffd23f', '#ff6a8a', '#5ec8ff', '#9be37a', '#ffffff', '#ff8b2a'];
 
 export function GameEffects() {
@@ -39,6 +40,9 @@ export function GameEffects() {
   const pool = useMemo<P[]>(() => [], []);
   const tmp = useMemo(() => ({ o: new Object3D(), c: new Color() }), []);
   const next = useRef(0);
+  // 나무에 맞은 순간(비행 시계가 맞은 시각에 닿을 때) 잎을 흩뿌린다: effect 안의 spawn 을 프레임 고리에서도 쓰려고 ref 로 건넨다
+  const burst = useRef<((x: number, y: number, z: number) => void) | null>(null);
+  const treeDone = useRef<unknown>(null);
 
   useEffect(() => {
     const spawn = (n: number, x: number, z: number, colors: string[], f: (k: number) => Partial<P>) => {
@@ -53,6 +57,12 @@ export function GameEffects() {
       if (m?.instanceColor) m.instanceColor.needsUpdate = true;
     };
     const rnd = (a: number, b: number) => a + Math.random() * (b - a);
+    burst.current = (x, y, z) =>
+      spawn(34, x, z, LEAVES, () => {
+        const a = rnd(0, 2 * Math.PI);
+        const r = rnd(0.4, 2.4);
+        return { y, vx: Math.cos(a) * r, vz: Math.sin(a) * r, vy: rnd(-0.5, 2.5), max: rnd(0.9, 1.6), size: rnd(0.08, 0.16), g: 4.5, drag: 1.1 };
+      });
     let prev = game.get();
     return game.subscribe(() => {
       const s = game.get();
@@ -100,6 +110,12 @@ export function GameEffects() {
     (delta) => {
       const m = mesh.current;
       if (!m) return;
+      const gs = game.get();
+      const sh = gs.shot;
+      if (sh?.tree && (gs.phase === 'flight' || gs.phase === 'ground') && treeDone.current !== sh && shotClock.t >= sh.tree.t) {
+        treeDone.current = sh;
+        burst.current?.(sh.tree.x, sh.tree.y, sh.tree.z);
+      }
       const dt = Math.min(delta, 0.05);
       const o = tmp.o;
       let any = false;

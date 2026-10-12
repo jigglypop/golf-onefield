@@ -4,20 +4,22 @@
  */
 import { useEffect, useLayoutEffect, useMemo, useRef } from 'react';
 
-import { CircleGeometry, Color, DoubleSide, Matrix4, Object3D, PlaneGeometry, Quaternion, Shape, ShapeGeometry, Vector3, type InstancedMesh } from 'three';
+import { CircleGeometry, DoubleSide, Object3D, PlaneGeometry, Shape, ShapeGeometry, Vector2, type InstancedMesh } from 'three';
 
-import { COLORS } from '../../scene/layout.ts';
-import { grassTexture, stripeTexture } from '../../scene/textures.ts';
+import { LAWN_TILE_M, lawnMaps, macroOverlay, mowStripes, packedMaps, repeated, tiled } from '../../photo/surfaces.ts';
+import { needleMaps, pineGeometry } from '../../photo/trees.ts';
+import { Forest } from '../../photo/Forest.tsx';
+import { SoftEdge } from '../../photo/SoftEdge.tsx';
+import { Terrain } from '../../photo/Terrain.tsx';
+import { Lakes } from '../../photo/Water.tsx';
 import { M_PER_YD } from '../../engine/units.ts';
 import { Label } from '../../scene/Label.tsx';
-import { CUP_R, ellipsePoints, fairwayOutline, FRINGE_M, inPolygon, TEE_BOX, yawTo, type Hole, type Vec2 } from '../course.ts';
+import { CUP_R, ellipsePoints, fairwayOutline, FRINGE_M, TEE_BOX, yawTo, type Hole, type Vec2 } from '../course.ts';
 import { holeOf, useGame } from '../round.ts';
 
 /** 판 높이 (m): 공은 이 위 1 cm 에 놓인다 */
 export const SURFACE_Y = { water: 0.0015, fairway: 0.002, tee: 0.003, land: 0.0035, fringe: 0.004, green: 0.005, bunker: 0.006, cup: 0.0055 } as const;
 export const BALL_LIFT = 0.008;
-
-const FLAG_COLORS = ['#e5484d', '#f5c518', '#3e8ef7'];
 
 /** 월드 (x, z) 점들 → three Shape (모양 좌표는 (x, −z): rotateX(−π/2) 뒤 다시 (x, 0, z) 가 된다) */
 function shapeOf(points: readonly Vec2[]): Shape {
@@ -35,49 +37,70 @@ function useDispose(...items: { dispose(): void }[]) {
   useEffect(() => () => items.forEach((i) => i.dispose()), items); // eslint-disable-line react-hooks/exhaustive-deps
 }
 
-function center(h: Hole): [number, number] {
-  const xs = h.bounds.map((p) => p[0]);
-  const zs = h.bounds.map((p) => p[1]);
-  return [(Math.min(...xs) + Math.max(...xs)) / 2, (Math.min(...zs) + Math.max(...zs)) / 2];
-}
+const NORMAL_SCALE = {
+  rough: new Vector2(1.5, 1.5),
+  fairway: new Vector2(0.85, 0.85),
+  green: new Vector2(0.6, 0.6),
+  tee: new Vector2(0.75, 0.75),
+  sand: new Vector2(1.3, 1.3),
+} as const;
 
-function Rough({ hole }: { hole: Hole }) {
-  const texture = useMemo(() => grassTexture(COLORS.rough, [600, 600]), []);
-  const geometry = useMemo(() => new PlaneGeometry(3000, 3000).rotateX(-Math.PI / 2), []);
-  useDispose(texture, geometry);
-  const [cx, cz] = center(hole);
-  return (
-    <mesh geometry={geometry} position={[cx, 0, cz]} receiveShadow>
-      <meshStandardMaterial map={texture} roughness={1} metalness={0} />
-    </mesh>
-  );
-}
+/** 큰 얼룩 덮개의 색 (밝은 풀·마른 풀 쪽 / 그늘 쪽) */
+const MACRO = { fairway: ['#bcd65e', '#2c4e18'] } as const;
 
 function Fairways({ hole }: { hole: Hole }) {
-  const geometries = useMemo(() => hole.fairways.map((f) => flatShape(fairwayOutline(f))), [hole]);
+  const outlines = useMemo(() => hole.fairways.map((f) => fairwayOutline(f)), [hole]);
+  const geometries = useMemo(() => outlines.map((o) => flatShape(o)), [outlines]);
   // ShapeGeometry 의 uv = 모양 좌표 (m). 줄무늬 한 쌍 = 24 m
-  const texture = useMemo(() => stripeTexture(COLORS.fairwayLight, COLORS.fairwayDark, [1 / 24, 1 / 24]), []);
+  const maps = useMemo(() => tiled(lawnMaps('fairway'), 1 / LAWN_TILE_M.fairway, 1 / LAWN_TILE_M.fairway), []);
+  const stripes = useMemo(() => repeated(mowStripes(), 1 / 24, 1), []);
+  const macro = useMemo(() => repeated(macroOverlay(29, [...MACRO.fairway]), 1 / 55, 1 / 55), []);
   useEffect(() => () => geometries.forEach((g) => g.dispose()), [geometries]);
-  useDispose(texture);
   return (
     <group>
       {geometries.map((g, i) => (
-        <mesh key={i} geometry={g} position={[0, SURFACE_Y.fairway, 0]} receiveShadow>
-          <meshStandardMaterial map={texture} roughness={0.95} polygonOffset polygonOffsetFactor={-1} polygonOffsetUnits={-2} />
-        </mesh>
+        <group key={i}>
+          <SoftEdge poly={outlines[i]!} y={SURFACE_Y.fairway - 0.0006} width={1.6} order={0} />
+          <mesh geometry={g} position={[0, SURFACE_Y.fairway, 0]} receiveShadow>
+            <meshStandardMaterial map={maps.map} normalMap={maps.normalMap} normalScale={NORMAL_SCALE.fairway} color="#f4fbe8" roughness={0.9} polygonOffset polygonOffsetFactor={-1} polygonOffsetUnits={-2} />
+          </mesh>
+          <mesh geometry={g} position={[0, SURFACE_Y.fairway + 0.0003, 0]}>
+            <meshBasicMaterial map={stripes} transparent depthWrite={false} polygonOffset polygonOffsetFactor={-1.2} polygonOffsetUnits={-2.4} />
+          </mesh>
+          <mesh geometry={g} position={[0, SURFACE_Y.fairway + 0.0005, 0]}>
+            <meshBasicMaterial map={macro} transparent depthWrite={false} polygonOffset polygonOffsetFactor={-1.4} polygonOffsetUnits={-2.8} />
+          </mesh>
+        </group>
       ))}
     </group>
   );
 }
 
+/** 티 박스 바깥 선 (티 평면 중심 기준) */
+const TEE_POLY: Vec2[] = [
+  [-TEE_BOX[0], -TEE_BOX[1]],
+  [TEE_BOX[0], -TEE_BOX[1]],
+  [TEE_BOX[0], TEE_BOX[1]],
+  [-TEE_BOX[0], TEE_BOX[1]],
+];
+
 function TeeBox({ hole }: { hole: Hole }) {
   const yaw = yawTo(hole.tee, hole.teeTarget);
-  const geometry = useMemo(() => new PlaneGeometry(TEE_BOX[0] * 2, TEE_BOX[1] * 2).rotateX(-Math.PI / 2), []);
+  const geometry = useMemo(() => {
+    const g = new PlaneGeometry(TEE_BOX[0] * 2, TEE_BOX[1] * 2).rotateX(-Math.PI / 2);
+    const uv = g.getAttribute('uv');
+    for (let i = 0; i < uv.count; i++) uv.setXY(i, uv.getX(i) * TEE_BOX[0] * 2, uv.getY(i) * TEE_BOX[1] * 2); // uv = m
+    return g;
+  }, []);
+  const maps = useMemo(() => tiled(lawnMaps('tee'), 1 / LAWN_TILE_M.tee, 1 / LAWN_TILE_M.tee), []);
   useDispose(geometry);
   return (
     <group position={[hole.tee[0], 0, hole.tee[1]]} rotation={[0, -yaw, 0]}>
+      <group position={[-1.5, 0, 0]}>
+        <SoftEdge poly={TEE_POLY} y={SURFACE_Y.tee - 0.0006} width={1.2} order={1} />
+      </group>
       <mesh geometry={geometry} position={[-1.5, SURFACE_Y.tee, 0]} receiveShadow>
-        <meshStandardMaterial color={COLORS.tee} roughness={0.95} polygonOffset polygonOffsetFactor={-2} polygonOffsetUnits={-3} />
+        <meshStandardMaterial map={maps.map} normalMap={maps.normalMap} normalScale={NORMAL_SCALE.tee} color="#e6f2d6" roughness={0.9} polygonOffset polygonOffsetFactor={-2} polygonOffsetUnits={-3} />
       </mesh>
       {[-3.2, 3.2].map((z) => (
         <mesh key={z} position={[1.2, 0.09, z]} castShadow>
@@ -90,6 +113,8 @@ function TeeBox({ hole }: { hole: Hole }) {
 }
 
 function GreenArea({ hole }: { hole: Hole }) {
+  const greenMaps = useMemo(() => tiled(lawnMaps('green'), 1 / LAWN_TILE_M.green, 1 / LAWN_TILE_M.green), []);
+  const fringeMaps = useMemo(() => tiled(lawnMaps('fairway'), 1 / LAWN_TILE_M.fairway, 1 / LAWN_TILE_M.fairway), []);
   const geo = useMemo(
     () => ({
       fringe: flatShape(ellipsePoints(hole.green, FRINGE_M, 64)),
@@ -99,14 +124,15 @@ function GreenArea({ hole }: { hole: Hole }) {
     [hole],
   );
   useEffect(() => () => Object.values(geo).forEach((g) => g.dispose()), [geo]);
-  const flag = FLAG_COLORS[(hole.number - 1) % FLAG_COLORS.length]!;
+  const fringeLine = useMemo(() => ellipsePoints(hole.green, FRINGE_M, 64), [hole]);
   return (
     <group>
+      <SoftEdge poly={fringeLine} y={SURFACE_Y.fringe - 0.0006} width={1.3} order={2} />
       <mesh geometry={geo.fringe} position={[0, SURFACE_Y.fringe, 0]} receiveShadow>
-        <meshStandardMaterial color={COLORS.fringe} roughness={0.95} polygonOffset polygonOffsetFactor={-3} polygonOffsetUnits={-4} />
+        <meshStandardMaterial map={fringeMaps.map} normalMap={fringeMaps.normalMap} normalScale={NORMAL_SCALE.fairway} color="#e6f3d4" roughness={0.92} polygonOffset polygonOffsetFactor={-3} polygonOffsetUnits={-4} />
       </mesh>
       <mesh geometry={geo.green} position={[0, SURFACE_Y.green, 0]} receiveShadow>
-        <meshStandardMaterial color={COLORS.green} roughness={0.85} polygonOffset polygonOffsetFactor={-4} polygonOffsetUnits={-5} />
+        <meshStandardMaterial map={greenMaps.map} normalMap={greenMaps.normalMap} normalScale={NORMAL_SCALE.green} color="#ffffff" roughness={0.8} polygonOffset polygonOffsetFactor={-4} polygonOffsetUnits={-5} />
       </mesh>
       <group position={[hole.pin[0], 0, hole.pin[1]]}>
         <mesh geometry={geo.cup} position={[0, SURFACE_Y.cup, 0]}>
@@ -116,10 +142,6 @@ function GreenArea({ hole }: { hole: Hole }) {
           <cylinderGeometry args={[0.012, 0.012, 2.4, 8]} />
           <meshStandardMaterial color="#f2f2ea" roughness={0.5} />
         </mesh>
-        <mesh position={[0.3, 2.15, 0]} castShadow>
-          <planeGeometry args={[0.6, 0.4]} />
-          <meshStandardMaterial color={flag} roughness={0.7} side={DoubleSide} />
-        </mesh>
       </group>
     </group>
   );
@@ -128,9 +150,8 @@ function GreenArea({ hole }: { hole: Hole }) {
 function Bunkers({ hole }: { hole: Hole }) {
   const geometries = useMemo(() => hole.bunkers.map((b) => flatShape(ellipsePoints(b, 0, 40))), [hole]);
   const lips = useMemo(() => hole.bunkers.map((b) => flatShape(ellipsePoints(b, 0.8, 40))), [hole]);
-  const sand = useMemo(() => grassTexture('#e2cf9b', [1 / 6, 1 / 6], 23), []);
+  const sand = useMemo(() => tiled(packedMaps('sand', 1.9), 1 / 2.4, 1 / 2.4), []);
   useEffect(() => () => [...geometries, ...lips].forEach((g) => g.dispose()), [geometries, lips]);
-  useDispose(sand);
   return (
     <group>
       {lips.map((g, i) => (
@@ -140,36 +161,11 @@ function Bunkers({ hole }: { hole: Hole }) {
       ))}
       {geometries.map((g, i) => (
         <mesh key={i} geometry={g} position={[0, SURFACE_Y.bunker, 0]} receiveShadow>
-          <meshStandardMaterial map={sand} roughness={1} polygonOffset polygonOffsetFactor={-6} polygonOffsetUnits={-7} />
+          <meshStandardMaterial map={sand.map} normalMap={sand.normalMap} roughnessMap={sand.roughnessMap} normalScale={NORMAL_SCALE.sand} roughness={1} polygonOffset polygonOffsetFactor={-6} polygonOffsetUnits={-7} />
         </mesh>
       ))}
     </group>
   );
-}
-
-function Water({ hole }: { hole: Hole }) {
-  const geometries = useMemo(() => hole.water.map((w) => flatShape(w)), [hole]);
-  useEffect(() => () => geometries.forEach((g) => g.dispose()), [geometries]);
-  return (
-    <group>
-      {geometries.map((g, i) => (
-        <mesh key={i} geometry={g} position={[0, SURFACE_Y.water, 0]}>
-          <meshStandardMaterial color="#3a86c8" roughness={0.12} metalness={0.15} emissive="#0b3b66" emissiveIntensity={0.25} polygonOffset polygonOffsetFactor={-0.5} polygonOffsetUnits={-1} />
-        </mesh>
-      ))}
-    </group>
-  );
-}
-
-/** 경계 바깥쪽 법선 (점이 경계 밖으로 나가는 쪽) */
-function outward(h: Hole, a: Vec2, b: Vec2): Vec2 {
-  const dx = b[0] - a[0];
-  const dz = b[1] - a[1];
-  const l = Math.hypot(dx, dz) || 1;
-  const n: Vec2 = [dz / l, -dx / l];
-  const mx = (a[0] + b[0]) / 2 + n[0] * 3;
-  const mz = (a[1] + b[1]) / 2 + n[1] * 3;
-  return inPolygon(h.bounds, mx, mz) ? [-n[0], -n[1]] : n;
 }
 
 /** OB 흰 말뚝 (경계를 따라 14 m 마다) */
@@ -206,82 +202,16 @@ function OBStakes({ hole }: { hole: Hole }) {
   );
 }
 
-/** 경계 밖 숲: 경계를 따라 바깥쪽 4–34 m 에 원뿔 나무 */
-function Trees({ hole }: { hole: Hole }) {
-  const crowns = useRef<InstancedMesh>(null);
-  const trunks = useRef<InstancedMesh>(null);
-  const spots = useMemo(() => {
-    const out: { x: number; z: number; h: number; r: number; tint: number }[] = [];
-    let s = 977 * hole.number + 13;
-    const rnd = () => ((s = (s * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff);
-    const b = hole.bounds;
-    for (let i = 0; i < b.length; i++) {
-      const a = b[i]!;
-      const c = b[(i + 1) % b.length]!;
-      const n = outward(hole, a, c);
-      const len = Math.hypot(c[0] - a[0], c[1] - a[1]);
-      for (let t = 0; t < len; t += 6.5) {
-        for (let k = 0; k < 2; k++) {
-          const d = 4 + rnd() * 30;
-          const x = a[0] + ((c[0] - a[0]) * t) / len + n[0] * d + (rnd() - 0.5) * 4;
-          const z = a[1] + ((c[1] - a[1]) * t) / len + n[1] * d + (rnd() - 0.5) * 4;
-          if (inPolygon(hole.bounds, x, z)) continue;
-          out.push({ x, z, h: 8 + rnd() * 9, r: 2.3 + rnd() * 2.2, tint: rnd() });
-        }
-      }
-    }
-    return out;
-  }, [hole]);
-  useLayoutEffect(() => {
-    const c = crowns.current;
-    const t = trunks.current;
-    if (!c || !t) return;
-    const m = new Matrix4();
-    const q = new Quaternion();
-    const o = new Object3D();
-    const dark = new Color('#2f5a2a');
-    const light = new Color('#4d7d34');
-    const col = new Color();
-    spots.forEach((p, i) => {
-      m.compose(new Vector3(p.x, 1.6 + p.h / 2, p.z), q, new Vector3(p.r, p.h, p.r));
-      c.setMatrixAt(i, m);
-      c.setColorAt(i, col.copy(dark).lerp(light, p.tint));
-      o.position.set(p.x, 1, p.z);
-      o.scale.set(0.35, 2, 0.35);
-      o.updateMatrix();
-      t.setMatrixAt(i, o.matrix);
-    });
-    c.instanceMatrix.needsUpdate = true;
-    if (c.instanceColor) c.instanceColor.needsUpdate = true;
-    t.instanceMatrix.needsUpdate = true;
-    c.computeBoundingSphere();
-    t.computeBoundingSphere();
-  }, [spots]);
-  return (
-    <group>
-      <instancedMesh key={`c${hole.number}`} ref={crowns} args={[undefined, undefined, spots.length]} castShadow>
-        <coneGeometry args={[1, 1, 8]} />
-        <meshStandardMaterial roughness={0.9} />
-      </instancedMesh>
-      <instancedMesh key={`t${hole.number}`} ref={trunks} args={[undefined, undefined, spots.length]} castShadow>
-        <cylinderGeometry args={[0.5, 0.6, 1, 6]} />
-        <meshStandardMaterial color="#6b4a2f" roughness={0.9} />
-      </instancedMesh>
-    </group>
-  );
-}
-
 /** 물 위의 땅 (섬 그린 둘레) */
 function Land({ hole }: { hole: Hole }) {
   const geometries = useMemo(() => (hole.land ?? []).map((l) => flatShape(l)), [hole]);
-  const texture = useMemo(() => grassTexture('#6f9d45', [1 / 8, 1 / 8], 31), []);
+  const maps = useMemo(() => tiled(lawnMaps('fairway'), 1 / LAWN_TILE_M.fairway, 1 / LAWN_TILE_M.fairway), []);
   useEffect(() => () => geometries.forEach((g) => g.dispose()), [geometries]);
-  useDispose(texture);
   return (
     <group>
       {geometries.map((g, i) => (
         <mesh key={i} geometry={g} position={[0, SURFACE_Y.land, 0]} receiveShadow>
-          <meshStandardMaterial map={texture} roughness={1} polygonOffset polygonOffsetFactor={-2.5} polygonOffsetUnits={-3.5} />
+          <meshStandardMaterial map={maps.map} normalMap={maps.normalMap} normalScale={NORMAL_SCALE.fairway} color="#e8f6d4" roughness={0.95} polygonOffset polygonOffsetFactor={-2.5} polygonOffsetUnits={-3.5} />
         </mesh>
       ))}
     </group>
@@ -315,20 +245,45 @@ function DriveMarkers({ hole }: { hole: Hole }) {
   );
 }
 
+/** 장애물 나무: 충돌 원기둥(r, h)에 맞춘 소나무. 땅은 평평한 채이고 날아가는 공만 막는다 (obstacles.ts) */
+function ObstacleTrees({ hole }: { hole: Hole }) {
+  const crown = useMemo(() => pineGeometry(11, 8, 12), []);
+  const needles = useMemo(() => needleMaps(), []);
+  useDispose(crown);
+  const trees = hole.trees;
+  if (!trees || trees.length === 0) return null;
+  return (
+    <group name="obstacle-trees">
+      {trees.map((t, i) => (
+        <group key={i} position={[t.x, 0, t.z]}>
+          <mesh position={[0, t.h * 0.3, 0]} castShadow>
+            <cylinderGeometry args={[0.16 + t.r * 0.05, 0.28 + t.r * 0.06, t.h * 0.6, 8]} />
+            <meshStandardMaterial color="#6d5236" roughness={1} />
+          </mesh>
+          <mesh geometry={crown} position={[0, t.h * 0.6, 0]} scale={[t.r * 1.05, t.h * 0.8, t.r * 1.05]} castShadow receiveShadow>
+            <meshStandardMaterial map={needles.map} normalMap={needles.normalMap} color="#d6ecc6" roughness={0.92} side={DoubleSide} />
+          </mesh>
+        </group>
+      ))}
+    </group>
+  );
+}
+
 export function HoleScene() {
   const hole = useGame(holeOf);
   return (
     <group name={`golf-hole-${hole.number}`} key={hole.number}>
-      <Rough hole={hole} />
+      <Terrain hole={hole} />
       <Land hole={hole} />
       <DriveMarkers hole={hole} />
       <Fairways hole={hole} />
       <TeeBox hole={hole} />
       <GreenArea hole={hole} />
       <Bunkers hole={hole} />
-      <Water hole={hole} />
+      <Lakes hole={hole} />
       <OBStakes hole={hole} />
-      <Trees hole={hole} />
+      <ObstacleTrees hole={hole} />
+      <Forest hole={hole} />
     </group>
   );
 }

@@ -18,3 +18,11 @@ web/onefield_bench.html
 *_track.mp4
 data/real/**/*.mp4
 data/real/**/*.mov
+
+# 외부 공개 실측 자료 (라이선스 미표기 → 내려받아 쓰고 커밋하지 않는다: tools/fetch_trackman_public.sh)
+data/real/external/
+
+# 비밀 값 (API 키 등). 저장소 어디에 있든 커밋하지 않는다
+.env
+.env.*
+!.env.example

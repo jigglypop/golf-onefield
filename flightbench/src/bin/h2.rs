@@ -138,9 +138,7 @@ fn main() {
         let c = stream_par(&h2, &s, 0.0685, 2);
         t_int += t1.elapsed().as_secs_f64();
         let v: Vec<f64> = c.iter().map(|p| p[0] as f64 * YD).filter(|x| x.is_finite()).collect();
-        let m = v.iter().sum::<f64>() / v.len() as f64;
-        let var = v.iter().map(|x| (x - m) * (x - m)).sum::<f64>() / (v.len() - 1) as f64;
-        fast.push((m, (var / v.len() as f64).sqrt()));
+        fast.push(mean_se(&v));
     }
     let t_all = t0.elapsed().as_secs_f64();
     let n_all = USGA.len() * nbig;
@@ -162,17 +160,18 @@ fn main() {
             if p[0] < 1.56 || p[2] < 0.05 {
                 continue; // 격자 3차 읽기 범위 밖 (v0' 1.56 이상, S0 0.05 이상에서 채점)
             }
-            let (x, z) = m.read(p[0], p[1], p[2], p[3]);
+            let (x, z) = m.read(p[0], p[1], p[2], p[3]).expect("채점 입력이 격자 안이어야 한다 (Modes::read 는 밖이면 None)");
             ex = ex.max((x as f64 - t.0).abs() * YD);
             ez = ez.max((z as f64 - t.1).abs() * YD);
         }
-        let ns = bench(n, 30, || q32.iter().map(|p| { let (x, z) = m.read(p[0], p[1], p[2], p[3]); (x + z) as f64 }).sum());
+        // 속도 시험은 입력이 격자 안임을 위에서 확인했으므로 범위 검사 없는 read_clamped (읽기 비용만 잰다)
+        let ns = bench(n, 30, || q32.iter().map(|p| { let (x, z) = m.read_clamped(p[0], p[1], p[2], p[3]); (x + z) as f64 }).sum());
         let big: Vec<[f32; 4]> = (0..1_000_000).map(|i| q32[i % n]).collect();
         let thr = |th: usize| {
             1e9 / bench(big.len(), 5, || {
                 let per = big.len() / th;
                 std::thread::scope(|sc| {
-                    let hs: Vec<_> = big.chunks(per).map(|c| { let m = &m; sc.spawn(move || c.iter().map(|p| { let (x, z) = m.read(p[0], p[1], p[2], p[3]); x + z }).sum::<f32>() as f64) }).collect();
+                    let hs: Vec<_> = big.chunks(per).map(|c| { let m = &m; sc.spawn(move || c.iter().map(|p| { let (x, z) = m.read_clamped(p[0], p[1], p[2], p[3]); x + z }).sum::<f32>() as f64) }).collect();
                     hs.into_iter().map(|h| h.join().unwrap()).sum()
                 })
             })

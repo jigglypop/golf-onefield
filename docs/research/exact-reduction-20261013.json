@@ -1,0 +1,209 @@
+{
+  "status": "passed",
+  "scipy_version": "1.17.1",
+  "numpy_version": "2.4.6",
+  "solver": {
+    "method": "RK45",
+    "rtol": 2e-11,
+    "atol": 2e-13,
+    "max_step": 0.03
+  },
+  "source_sha256": {
+    "flightbench/src/engine.rs": "8e40966f360892fd0dc5d13672f5e298c8f4cca59d1df8fc83ded2cb9d9d51d9",
+    "golf-core/src/lib.rs": "31f08cf9cfaef1acac9e2716257f46f0dbd088b37618ac45ef646e0b37e5dbca",
+    "tools/research_exact_reduction.py": "012e6a0ad186549a5cd845ebcc9a0a0f211c2a44aa5a9beb6cd4b72f226b13ca"
+  },
+  "coefficients": {
+    "v": 0.1383,
+    "e": 0.254,
+    "re0": 74003.032,
+    "d": 1.4838,
+    "c": 2.8062,
+    "l": 6.5014,
+    "n": 12,
+    "beta": 0.06
+  },
+  "units": {
+    "L_m": 53.53157581531039,
+    "U_m_s": 22.916037151920374,
+    "T_s": 2.335987477259977,
+    "Re_per_u": 64828.32963132214
+  },
+  "launch_schema": [
+    "speed_dimensionless",
+    "launch_deg",
+    "initial_spin_ratio",
+    "axis_tilt_radians"
+  ],
+  "interpretation": [
+    "동일 공유위기12 ODE를 독립 Python으로 재작성한 수학 동치 검산. production 호출, 성능 및 실측 검증은 아니다.",
+    "호길이 s=integral(|u| dt)에서 w=w0 exp(-beta s). 시간 출력에는 dt/ds=1/|u| 보조 적분이 필요해 전체 상태 수가 반드시 줄지는 않는다.",
+    "균일 수평 바람에서 u_rel=u_ground-W, r_ground=r_rel+W t. 스핀축은 원래 좌표계의 전체 벡터를 그대로 유지했다.",
+    "상대 발사 방향으로 좌표를 회전하면 스핀축에 x 성분이 생길 수 있다. production의 (0,sin(a),cos(a)) 1각도 입력 또는 기존 4축 표로 일반 옆바람을 표현한다는 검산이 아니다.",
+    "기본 밀도·점성, 평지 y=0, 고정 beta·축. 돌풍, 높이별 밀도, 축 세차, 수직 바람, 지면 충돌은 범위 밖이다. Re_scale가 변하는 환경은 계수 위치도 조정해야 한다."
+  ],
+  "arc_cases": [
+    {
+      "case": 1,
+      "launch": [
+        3.3,
+        11.0,
+        0.07,
+        0.0
+      ],
+      "landing_time_s": 6.722462854118047,
+      "max_position_error_yd": 1.3779069837161474e-10,
+      "time_error_s": 6.010619310378965e-12,
+      "max_velocity_error_m_s": 3.7333461785058427e-11,
+      "spin_state_error_dimensionless": 2.1399548799649892e-14
+    },
+    {
+      "case": 2,
+      "launch": [
+        2.3,
+        17.0,
+        0.22,
+        0.4
+      ],
+      "landing_time_s": 5.665515222145839,
+      "max_position_error_yd": 3.4779152216344834e-11,
+      "time_error_s": 1.7168752086084203e-12,
+      "max_velocity_error_m_s": 1.501836070036799e-11,
+      "spin_state_error_dimensionless": 5.1458837191376006e-14
+    },
+    {
+      "case": 3,
+      "launch": [
+        1.8,
+        24.0,
+        0.3,
+        -0.35
+      ],
+      "landing_time_s": 4.869694726909005,
+      "max_position_error_yd": 2.596574716955665e-11,
+      "time_error_s": 1.5083604551762195e-12,
+      "max_velocity_error_m_s": 3.183037620232152e-11,
+      "spin_state_error_dimensionless": 5.21249710061511e-14
+    },
+    {
+      "case": 4,
+      "launch": [
+        1.2,
+        38.0,
+        0.4,
+        0.12
+      ],
+      "landing_time_s": 3.7437463391351034,
+      "max_position_error_yd": 1.5453356813601476e-10,
+      "time_error_s": 8.389866011855346e-12,
+      "max_velocity_error_m_s": 2.6253509074554854e-11,
+      "spin_state_error_dimensionless": 1.4760415112391456e-13
+    }
+  ],
+  "uniform_wind_cases": [
+    {
+      "case": 1,
+      "launch": [
+        3.3,
+        11.0,
+        0.07,
+        0.0
+      ],
+      "wind_dimensionless": [
+        0.12,
+        0.0,
+        0.0
+      ],
+      "spin_axis_in_original_frame": [
+        0.0,
+        0.0,
+        1.0
+      ],
+      "max_position_error_yd": 4.679684095639746e-13,
+      "time_error_s": 8.299094663968195e-15,
+      "max_velocity_error_m_s": 1.2313885446346107e-12,
+      "spin_state_error_dimensionless": 5.551115123125783e-17
+    },
+    {
+      "case": 2,
+      "launch": [
+        2.3,
+        17.0,
+        0.22,
+        0.4
+      ],
+      "wind_dimensionless": [
+        -0.15,
+        0.0,
+        0.0
+      ],
+      "spin_axis_in_original_frame": [
+        0.0,
+        0.3894183423086505,
+        0.9210609940028851
+      ],
+      "max_position_error_yd": 1.9238701282074514e-12,
+      "time_error_s": 3.2262730506176355e-13,
+      "max_velocity_error_m_s": 4.152120051329927e-12,
+      "spin_state_error_dimensionless": 1.2212453270876722e-15
+    },
+    {
+      "case": 3,
+      "launch": [
+        1.8,
+        24.0,
+        0.3,
+        -0.35
+      ],
+      "wind_dimensionless": [
+        0.0,
+        0.0,
+        0.18
+      ],
+      "spin_axis_in_original_frame": [
+        0.0,
+        -0.34289780745545134,
+        0.9393727128473789
+      ],
+      "max_position_error_yd": 4.8928697044411124e-11,
+      "time_error_s": 3.3372734417482105e-12,
+      "max_velocity_error_m_s": 2.449038456746439e-11,
+      "spin_state_error_dimensionless": 3.175237850427948e-14
+    },
+    {
+      "case": 4,
+      "launch": [
+        1.2,
+        38.0,
+        0.4,
+        0.12
+      ],
+      "wind_dimensionless": [
+        0.08,
+        0.0,
+        -0.22
+      ],
+      "spin_axis_in_original_frame": [
+        0.0,
+        0.11971220728891936,
+        0.9928086358538663
+      ],
+      "max_position_error_yd": 1.9312796280255476e-10,
+      "time_error_s": 1.1211039504188035e-11,
+      "max_velocity_error_m_s": 4.83345445681164e-11,
+      "spin_state_error_dimensionless": 6.916689443414725e-14
+    }
+  ],
+  "combined_maxima": {
+    "max_position_error_yd": 1.9312796280255476e-10,
+    "time_error_s": 1.1211039504188035e-11,
+    "max_velocity_error_m_s": 4.83345445681164e-11,
+    "spin_state_error_dimensionless": 1.4760415112391456e-13
+  },
+  "thresholds": {
+    "max_position_error_yd": 5e-07,
+    "time_error_s": 5e-09,
+    "max_velocity_error_m_s": 5e-08,
+    "spin_state_error_dimensionless": 5e-10
+  }
+}

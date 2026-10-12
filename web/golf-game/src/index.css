@@ -1,0 +1,368 @@
+/* 색은 토큰으로 둔다. 기본은 어두운 패널이고, 밝은 설정(prefers-color-scheme: light)은 아래 미디어 쿼리에서 바꾼다 */
+:root {
+  --panel-bg: rgba(16, 26, 20, 0.82);
+  --panel-fg: #f3f7f1;
+  --panel-muted: #b8c7bb;
+  --accent: #f2c14e;
+  --line: rgba(255, 255, 255, 0.14);
+  --input-bg: rgba(0, 0, 0, 0.25);
+  font-family: system-ui, 'Malgun Gothic', 'Apple SD Gothic Neo', sans-serif;
+  color-scheme: dark;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}
+
+/* 가로 스크롤이 생기지 않도록 막는다 (캔버스와 HUD 는 화면 크기에 맞춘다) */
+body {
+  overflow: hidden;
+  overflow-x: hidden;
+  background: #a8dbef;
+  color: var(--panel-fg);
+}
+
+.hud {
+  position: fixed;
+  inset: 0;
+  pointer-events: none; /* 빈 곳은 캔버스(카메라 드래그)로 통과시킨다 */
+}
+
+.hud > * {
+  pointer-events: auto;
+}
+
+.title {
+  position: absolute;
+  top: 16px;
+  left: 16px;
+  margin: 0;
+  padding: 8px 12px;
+  border-radius: 10px;
+  background: var(--panel-bg);
+}
+
+.title h1 {
+  margin: 0;
+  font-size: 17px;
+}
+
+.title p {
+  margin: 2px 0 0;
+  font-size: 12px;
+  color: var(--panel-muted);
+}
+
+.result-wrap {
+  position: absolute;
+  top: 92px;
+  left: 16px;
+  width: min(280px, calc(100vw - 32px));
+}
+
+.result {
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: var(--panel-bg);
+  font-size: 13px;
+}
+
+.result-head {
+  margin-bottom: 6px;
+  font-size: 14px;
+}
+
+.result-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 4px 0;
+  margin: 0;
+}
+
+.result-grid > div {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 8px;
+  border-top: 1px solid var(--line);
+  padding-top: 4px;
+}
+
+.result-grid dt {
+  color: var(--panel-muted);
+}
+
+.result-grid dd {
+  margin: 0;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.result small,
+.panel small {
+  color: var(--panel-muted);
+  font-size: 11px;
+}
+
+.muted {
+  margin: 0;
+  color: var(--panel-muted);
+}
+
+.panel {
+  position: absolute;
+  right: 16px;
+  bottom: 16px;
+  width: min(340px, calc(100vw - 32px));
+  max-height: 70vh;
+  overflow-y: auto;
+  padding: 10px 12px 12px;
+  border-radius: 12px;
+  background: var(--panel-bg);
+  font-size: 13px;
+}
+
+.panel.is-closed {
+  width: auto;
+  max-height: none;
+  padding: 0;
+  background: none;
+}
+
+.panel-toggle {
+  display: block;
+  margin-left: auto;
+  padding: 6px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel-bg);
+  color: var(--panel-fg);
+  font: inherit;
+  cursor: pointer;
+}
+
+.panel-body {
+  margin-top: 8px;
+}
+
+.presets {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 10px;
+}
+
+.chip,
+.ghost,
+.primary {
+  font: inherit;
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+.chip {
+  flex: 1;
+  padding: 7px 0;
+  border: 1px solid var(--line);
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--panel-fg);
+}
+
+.param {
+  margin-bottom: 9px;
+}
+
+.param-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.param-ctrl {
+  display: grid;
+  grid-template-columns: 1fr 78px 38px;
+  align-items: center;
+  gap: 6px;
+}
+
+.param-ctrl input[type='range'] {
+  width: 100%;
+  min-width: 0;
+  accent-color: var(--accent);
+}
+
+.num {
+  width: 100%;
+  min-width: 0;
+  padding: 4px 6px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--input-bg);
+  color: var(--panel-fg);
+  font: inherit;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+.unit {
+  color: var(--panel-muted);
+  font-size: 12px;
+}
+
+.actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.primary,
+.ghost {
+  flex: 1;
+  padding: 10px 0;
+  font-size: 15px;
+}
+
+.primary {
+  border: none;
+  background: var(--accent);
+  color: #1d1600;
+  font-weight: 700;
+}
+
+.primary:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.ghost {
+  border: 1px solid var(--line);
+  background: transparent;
+  color: var(--panel-fg);
+}
+
+.hint {
+  min-height: 1.4em;
+  margin: 8px 0 0;
+  font-size: 12px;
+  color: var(--panel-muted);
+}
+
+.overlay {
+  position: fixed;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 16px;
+  background: rgba(20, 32, 26, 0.55);
+  pointer-events: none;
+}
+
+.overlay p {
+  margin: 0;
+  padding: 12px 16px;
+  border-radius: 10px;
+  background: var(--panel-bg);
+  text-align: center;
+}
+
+/* 좁은 화면: 결과 카드는 위에, 조작판은 아래 전체 폭. 접으면 작은 버튼만 남는다 */
+@media (max-width: 720px) {
+  .result-wrap {
+    top: 84px;
+  }
+
+  .panel {
+    left: 16px;
+    right: 16px;
+    width: auto;
+    max-height: 56dvh;
+  }
+
+  .panel.is-closed {
+    left: auto;
+  }
+}
+
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme='dark']) {
+    --panel-bg: rgba(255, 255, 255, 0.9);
+    --panel-fg: #1c2a20;
+    --panel-muted: #4f6356;
+    --line: rgba(0, 0, 0, 0.12);
+    --input-bg: rgba(255, 255, 255, 0.9);
+    color-scheme: light;
+  }
+}
+
+:root[data-theme='dark'] {
+  --panel-bg: rgba(16, 26, 20, 0.82);
+  --panel-fg: #f3f7f1;
+  --panel-muted: #b8c7bb;
+  --line: rgba(255, 255, 255, 0.14);
+  --input-bg: rgba(0, 0, 0, 0.25);
+  color-scheme: dark;
+}
+
+/* 클럽표 */
+.clubs {
+  margin-top: 10px;
+  border-top: 1px solid var(--line);
+  padding-top: 8px;
+}
+
+.clubs summary {
+  cursor: pointer;
+  color: var(--panel-fg);
+}
+
+.club-list {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 4px 8px;
+  margin: 8px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.club-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 6px;
+  width: 100%;
+  padding: 5px 8px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--panel-fg);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.club-carry {
+  font-variant-numeric: tabular-nums;
+}
+
+.core-note {
+  margin: 6px 0 0;
+  font-size: 11px;
+  color: var(--panel-muted);
+}
+
+.core-warn {
+  color: #ffb4a8;
+  font-weight: 600;
+}
+
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme='dark']) .core-warn {
+    color: #b3261e;
+  }
+}

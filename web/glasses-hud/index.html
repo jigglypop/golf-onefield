@@ -1,0 +1,106 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>골프 안경 HUD</title>
+<style>
+  /* Meta Ray-Ban Display: 600x600, 오른쪽 렌즈. 투과형이라 검정 배경이 곧 '아무것도 안 그림'이다 (밝기는 기기에서 확인) */
+  :root { color-scheme: dark; --fg: #f2f2f2; --dim: #9aa0a6; --ok: #7ddc7d; --bad: #ff8a80; }
+  html, body { margin: 0; background: #000; color: var(--fg); font: 500 28px/1.25 system-ui, sans-serif; }
+  main { box-sizing: border-box; width: min(100vw, 600px); min-height: min(100vh, 600px); padding: 20px 24px; overflow: hidden; }
+  h1 { margin: 0 0 6px; font-size: 22px; font-weight: 600; color: var(--dim); letter-spacing: .02em; }
+  .big { font-size: 96px; line-height: 1; font-weight: 700; }
+  .big small { font-size: 32px; color: var(--dim); font-weight: 500; margin-left: 6px; }
+  .row { display: flex; gap: 22px; margin-top: 10px; }
+  .row div { flex: 1; }
+  .row b { display: block; font-size: 40px; }
+  .row span { color: var(--dim); font-size: 20px; }
+  canvas { display: block; width: 100%; height: 120px; margin-top: 10px; }
+  #probe { margin-top: 10px; font-size: 18px; color: var(--dim); white-space: pre-wrap; }
+  .ok { color: var(--ok); } .bad { color: var(--bad); }
+  button { margin-top: 10px; padding: 10px 18px; font: inherit; font-size: 22px; color: #000; background: var(--fg); border: 0; border-radius: 10px; }
+</style>
+</head>
+<body>
+<main>
+  <h1>골프 안경 HUD · 기능 점검</h1>
+  <div class="big"><span id="carry">--</span><small>yd 캐리</small></div>
+  <div class="row">
+    <div><b id="apex">--</b><span>최고 높이 m</span></div>
+    <div><b id="land">--</b><span>착지각 °</span></div>
+    <div><b id="side">--</b><span>옆 편차 yd</span></div>
+  </div>
+  <canvas id="arc" width="1200" height="240"></canvas>
+  <button id="shot">다음 샷</button>
+  <div id="probe">점검 중…</div>
+</main>
+<script type="module">
+// golf-core wasm 은 build.sh 가 ./wasm/ 으로 복사한다. 안경 브라우저가 WebAssembly 를 지원하는지 먼저 본다.
+const probe = document.getElementById('probe');
+const lines = [];
+const add = (name, ok, extra = '') => lines.push(`<span class="${ok ? 'ok' : 'bad'}">${ok ? '✓' : '✗'}</span> ${name}${extra ? ' ' + extra : ''}`);
+const show = () => { probe.innerHTML = lines.join('<br>'); };
+
+// wasm-feature-detect 의 simd 검사용 최소 모듈
+const simdBytes = new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0, 1, 5, 1, 96, 0, 1, 123, 3, 2, 1, 0, 10, 10, 1, 8, 0, 65, 0, 253, 15, 253, 98, 11]);
+const hasWasm = typeof WebAssembly === 'object';
+add('WebAssembly', hasWasm);
+add('wasm SIMD', hasWasm && WebAssembly.validate(simdBytes));
+add('WebGL2', !!document.createElement('canvas').getContext('webgl2'));
+add('WebGPU', 'gpu' in navigator);
+add('화면', true, `${innerWidth}x${innerHeight} @${devicePixelRatio}x, 코어 ${navigator.hardwareConcurrency ?? '?'}`);
+
+// 프리셋: 드라이버·7번·웨지를 돌려 가며 보여 준다
+const PRESETS = [
+  { name: '드라이버', mph: 167, vla: 10.9, rpm: 2686, axis: -8 },
+  { name: '7번', mph: 120, vla: 16.3, rpm: 7097, axis: 8 },
+  { name: '웨지', mph: 86, vla: 25.7, rpm: 8403, axis: -5 },
+];
+let n = 0, core = null;
+
+function drawArc(points, carryM) {
+  const c = document.getElementById('arc'), g = c.getContext('2d');
+  g.clearRect(0, 0, c.width, c.height);
+  let maxY = 1;
+  for (let i = 0; i < points.length; i += 4) maxY = Math.max(maxY, points[i + 2]);
+  const sx = (c.width - 20) / Math.max(carryM, 1), sy = (c.height - 20) / Math.max(maxY * 1.1, 1);
+  g.strokeStyle = '#f2f2f2'; g.lineWidth = 4; g.beginPath();
+  for (let i = 0; i < points.length; i += 4) {
+    const x = 10 + points[i + 1] * sx, y = c.height - 10 - points[i + 2] * sy;
+    i === 0 ? g.moveTo(x, y) : g.lineTo(x, y);
+  }
+  g.stroke();
+}
+
+function next() {
+  if (!core) return;
+  const p = PRESETS[n++ % PRESETS.length];
+  const t0 = performance.now();
+  const f = core.fly_f64(p.mph, p.vla, p.rpm, p.axis, 0.05);
+  const ms = performance.now() - t0;
+  const pts = f.path();
+  document.getElementById('carry').textContent = f.carry_yd.toFixed(0);
+  document.getElementById('apex').textContent = f.apex_m.toFixed(0);
+  document.getElementById('land').textContent = f.land_deg.toFixed(0);
+  document.getElementById('side').textContent = (f.lateral_m / 0.9144).toFixed(1);
+  drawArc(pts, f.carry_m);
+  document.querySelector('h1').textContent = `${p.name} · ${p.mph} mph ${p.vla}° ${p.rpm} rpm · 계산 ${ms.toFixed(2)} ms`;
+  f.free();
+}
+
+try {
+  if (!hasWasm) throw new Error('이 브라우저에는 WebAssembly 가 없다');
+  const mod = await import('./wasm/golf_core.js');
+  await mod.default();
+  core = mod;
+  add('golf-core wasm 불러오기', true);
+  next();
+} catch (e) {
+  add('golf-core wasm 불러오기', false, String(e));
+}
+show();
+document.getElementById('shot').addEventListener('click', next);
+</script>
+</body>
+</html>

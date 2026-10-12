@@ -1,0 +1,288 @@
+/*
+ * 화면 디자인 한 겹: hud.css·game.css 의 색 토큰과 몇몇 부품을 "중계 화면" 느낌으로 다듬는다 (유리 카드, 금색 숫자, 둥근 알약 클럽 칩).
+ * 이 파일은 마지막에 불러온다 (main.tsx). 레이아웃(위치·크기)은 건드리지 않고 겉모양만 바꾼다.
+ */
+
+:root {
+  --panel: rgba(12, 20, 17, 0.52);
+  --panel-line: rgba(255, 255, 255, 0.12);
+  --text: #f5f8f2;
+  --muted: #b6c4b9;
+  --accent: #f26a2a;
+  --gold: #f6c744;
+  --chip: rgba(255, 255, 255, 0.07);
+  --chip-on: #f6c744;
+  --glass: blur(18px) saturate(1.4);
+  font-family: 'Pretendard', 'Apple SD Gothic Neo', 'Noto Sans KR', 'Malgun Gothic', system-ui, sans-serif;
+  letter-spacing: 0.005em;
+}
+
+/* 유리 카드 */
+.panel {
+  background:
+    linear-gradient(155deg, rgba(255, 255, 255, 0.09), rgba(255, 255, 255, 0.015) 42%),
+    var(--panel);
+  border: 1px solid var(--panel-line);
+  border-radius: 16px;
+  -webkit-backdrop-filter: var(--glass);
+  backdrop-filter: var(--glass);
+  box-shadow:
+    0 14px 38px rgba(3, 9, 6, 0.38),
+    0 2px 6px rgba(3, 9, 6, 0.25),
+    inset 0 1px 0 rgba(255, 255, 255, 0.14);
+}
+
+/* 홀 카드: 스코어 바 느낌 (왼쪽 금색 띠) */
+.g-hole {
+  padding: 10px 16px 10px 14px;
+  border-left: 4px solid var(--gold);
+  gap: 14px;
+}
+
+.g-hole-no {
+  font-size: 46px;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  text-shadow: 0 2px 10px rgba(246, 199, 68, 0.28);
+  font-variant-numeric: tabular-nums;
+}
+
+.g-hole-no span {
+  font-size: 12px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.g-hole-name {
+  font-size: 17px;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+}
+
+.g-hole-meta {
+  font-size: 12.5px;
+  color: var(--muted);
+}
+
+.g-hole-meta b {
+  font-size: 14px;
+  color: #fff;
+}
+
+/* 정보 카드: 라벨은 작게 띄우고 거리는 크게 */
+.g-info {
+  padding: 12px 16px;
+  min-width: 236px;
+}
+
+.g-label {
+  font-size: 11px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.g-row {
+  padding: 3px 0;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.g-row:last-child {
+  border-bottom: 0;
+}
+
+.g-big {
+  font-size: 32px;
+  font-weight: 800;
+  letter-spacing: -0.01em;
+  color: var(--gold);
+  text-shadow: 0 2px 12px rgba(246, 199, 68, 0.3);
+  font-variant-numeric: tabular-nums;
+}
+
+.g-lie {
+  font-size: 14px;
+  letter-spacing: 0.02em;
+}
+
+.g-wind {
+  font-size: 14px;
+}
+
+/* 아래 막대: 클럽·미터·키 안내 */
+.g-bottom {
+  padding: 10px 16px 8px;
+  border-radius: 20px;
+}
+
+.g-clubs {
+  gap: 5px;
+}
+
+.g-club {
+  min-width: 50px;
+  padding: 4px 6px 3px;
+  border-radius: 11px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.1), rgba(255, 255, 255, 0.03));
+  transition:
+    transform 0.12s ease,
+    background 0.12s ease,
+    box-shadow 0.12s ease;
+}
+
+.g-club:hover:not(:disabled) {
+  transform: translateY(-1px);
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.16), rgba(255, 255, 255, 0.06));
+}
+
+.g-club b {
+  font-size: 12.5px;
+  letter-spacing: 0.02em;
+}
+
+.g-club.on {
+  background: linear-gradient(180deg, #ffd96a, #f1b92e);
+  color: #20200f;
+  border-color: rgba(255, 226, 130, 0.9);
+  box-shadow:
+    0 4px 14px rgba(246, 199, 68, 0.38),
+    inset 0 1px 0 rgba(255, 255, 255, 0.55);
+}
+
+.g-club.on span {
+  color: #4a4624;
+}
+
+/* 스윙 미터 */
+.g-meter {
+  height: 22px;
+  border-radius: 11px;
+  background:
+    linear-gradient(90deg, rgba(255, 112, 80, 0.5) 0%, rgba(255, 112, 80, 0.12) 22%, rgba(255, 255, 255, 0.06) 23%, rgba(255, 255, 255, 0.06) 100%),
+    rgba(0, 0, 0, 0.28);
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  box-shadow: inset 0 2px 6px rgba(0, 0, 0, 0.35);
+}
+
+.g-meter-fill {
+  background: linear-gradient(90deg, #7bdc6a 0%, #f6c744 62%, #f26a2a 100%);
+  opacity: 0.95;
+  border-radius: 11px;
+}
+
+.g-meter-zone {
+  background: rgba(255, 255, 255, 0.92);
+  box-shadow: 0 0 10px rgba(255, 255, 255, 0.5);
+}
+
+.g-meter-marker {
+  width: 5px;
+  margin-left: -2.5px;
+  border-radius: 3px;
+  box-shadow:
+    0 0 10px rgba(255, 255, 255, 0.95),
+    0 0 2px rgba(0, 0, 0, 0.6);
+}
+
+.g-meter-value {
+  font-size: 20px;
+  letter-spacing: -0.01em;
+  font-variant-numeric: tabular-nums;
+}
+
+.g-meter-hint {
+  font-size: 12.5px;
+}
+
+.g-swing,
+.g-next {
+  background: linear-gradient(180deg, #ff8446, #f05a1c);
+  box-shadow:
+    0 6px 18px rgba(240, 90, 28, 0.42),
+    inset 0 1px 0 rgba(255, 255, 255, 0.35);
+  letter-spacing: 0.04em;
+  transition:
+    transform 0.12s ease,
+    box-shadow 0.12s ease;
+}
+
+.g-swing:hover:not(:disabled),
+.g-next:hover {
+  transform: translateY(-1px);
+  box-shadow:
+    0 9px 22px rgba(240, 90, 28, 0.5),
+    inset 0 1px 0 rgba(255, 255, 255, 0.4);
+}
+
+.g-keys kbd {
+  background: rgba(255, 255, 255, 0.12);
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-bottom-width: 2px;
+  border-radius: 5px;
+  padding: 0 5px;
+}
+
+/* 위 가운데 모드 전환 */
+.g-mode {
+  padding: 4px;
+  background: var(--panel);
+  -webkit-backdrop-filter: var(--glass);
+  backdrop-filter: var(--glass);
+  box-shadow:
+    0 10px 28px rgba(3, 9, 6, 0.35),
+    inset 0 1px 0 rgba(255, 255, 255, 0.14);
+}
+
+.g-mode button {
+  padding: 6px 18px;
+  letter-spacing: 0.03em;
+  transition: background 0.15s ease;
+}
+
+.g-mode button.on {
+  background: linear-gradient(180deg, #ffd96a, #f1b92e);
+  box-shadow: 0 3px 10px rgba(246, 199, 68, 0.35);
+}
+
+/* 메뉴: 뒤의 항공 장면이 보이게 어둠막을 옅게 */
+.g-menu {
+  background: radial-gradient(ellipse at center, rgba(8, 20, 12, 0.1), rgba(8, 20, 12, 0.42));
+}
+
+/* 알림 */
+.g-toast {
+  background: rgba(10, 17, 14, 0.62);
+  -webkit-backdrop-filter: var(--glass);
+  backdrop-filter: var(--glass);
+  border-radius: 18px;
+  padding: 12px 26px;
+  font-size: 24px;
+  letter-spacing: 0.01em;
+  box-shadow: 0 14px 40px rgba(3, 9, 6, 0.4);
+}
+
+/* 결과 카드·메뉴 */
+.g-card,
+.g-menu-card {
+  border-radius: 22px;
+}
+
+.g-card h2 {
+  font-size: 22px;
+  letter-spacing: 0.02em;
+}
+
+.g-measured textarea {
+  border-radius: 10px;
+  background: rgba(0, 0, 0, 0.32);
+}
+
+.g-physics-note {
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.75);
+}
+
+.title,
+.badge {
+  text-shadow: 0 1px 4px rgba(0, 0, 0, 0.55);
+}

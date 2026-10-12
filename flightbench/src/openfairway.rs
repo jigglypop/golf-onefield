@@ -309,6 +309,63 @@ pub fn fly_converged(s: &Shot, dt: f64) -> [f64; 3] {
     [f64::NAN; 3]
 }
 
+/// 목표선(+x, hla = 0 방향) 기준 착지: [앞 yd, 오른쪽 yd, 최고 높이 yd, 착지각 deg, 착지 속력 mph].
+/// 원본 방식(Some(hz): 반암시 오일러, 보간 없음)이나 수렴해(None: RK4 dt 1e-3, 선형 보간).
+/// 위의 `fly_*` 는 발사 방향으로의 거리만 주지만, 실측 대조(옆 편차·발사 방향이 있는 샷)에는 목표선 좌표가 필요하다.
+pub fn fly_xz(s: &Shot, hz: Option<f64>, mul: (f64, f64)) -> [f64; 5] {
+    let (c, mut v, mut om, _dir) = setup(s, mul);
+    let mut p = [0.0, 0.02, 0.0];
+    let mut apex = p[1];
+    match hz {
+        Some(hz) => {
+            let dt = 1.0 / hz;
+            for _ in 0..(12.0 * hz) as usize {
+                let (a, dw) = deriv(&c, v, om);
+                for i in 0..3 {
+                    v[i] += a[i] * dt;
+                    om[i] += dw[i] * dt;
+                }
+                for i in 0..3 {
+                    p[i] += v[i] * dt;
+                }
+                apex = apex.max(p[1]);
+                if p[1] <= 0.0 {
+                    let vt = (v[0] * v[0] + v[2] * v[2]).sqrt();
+                    return [p[0] * YD_PER_M, p[2] * YD_PER_M, apex * YD_PER_M, v[1].abs().atan2(vt.max(1e-4)).to_degrees(), norm(v) / MPS_PER_MPH];
+                }
+            }
+        }
+        None => {
+            let dt = 1e-3;
+            let add = |a: [f64; 3], b: [f64; 3], h: f64| [a[0] + h * b[0], a[1] + h * b[1], a[2] + h * b[2]];
+            for _ in 0..(12.0 / dt) as usize {
+                let (a1, w1) = deriv(&c, v, om);
+                let (v2, o2) = (add(v, a1, 0.5 * dt), add(om, w1, 0.5 * dt));
+                let (a2, w2) = deriv(&c, v2, o2);
+                let (v3, o3) = (add(v, a2, 0.5 * dt), add(om, w2, 0.5 * dt));
+                let (a3, w3) = deriv(&c, v3, o3);
+                let (v4, o4) = (add(v, a3, dt), add(om, w3, dt));
+                let (a4, w4) = deriv(&c, v4, o4);
+                let np: [f64; 3] = std::array::from_fn(|i| p[i] + dt / 6.0 * (v[i] + 2.0 * v2[i] + 2.0 * v3[i] + v4[i]));
+                let nv: [f64; 3] = std::array::from_fn(|i| v[i] + dt / 6.0 * (a1[i] + 2.0 * a2[i] + 2.0 * a3[i] + a4[i]));
+                let no: [f64; 3] = std::array::from_fn(|i| om[i] + dt / 6.0 * (w1[i] + 2.0 * w2[i] + 2.0 * w3[i] + w4[i]));
+                apex = apex.max(np[1]);
+                if np[1] <= 0.0 {
+                    let t = p[1] / (p[1] - np[1]);
+                    let q: [f64; 3] = std::array::from_fn(|i| p[i] + t * (np[i] - p[i]));
+                    let u: [f64; 3] = std::array::from_fn(|i| v[i] + t * (nv[i] - v[i]));
+                    let vt = (u[0] * u[0] + u[2] * u[2]).sqrt();
+                    return [q[0] * YD_PER_M, q[2] * YD_PER_M, apex * YD_PER_M, u[1].abs().atan2(vt).to_degrees(), norm(u) / MPS_PER_MPH];
+                }
+                p = np;
+                v = nv;
+                om = no;
+            }
+        }
+    }
+    [f64::NAN; 5]
+}
+
 /// 원본 회귀 시험(LmCarryWindowRegressionTests) 입력과 비교 창: (이름, 샷, 창 하한, 창 상한), 창은 ±2 yd 를 더해 쓴다.
 pub fn regression_cases() -> Vec<(&'static str, Shot, f64, f64)> {
     let s = |mph, vla, hla, back, side, total| Shot { mph, vla, hla, back, side, total };

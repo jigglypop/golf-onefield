@@ -1,0 +1,145 @@
+{
+  "schema": 1,
+  "runUtc": "2026-10-12T17:50:40.670Z",
+  "recipe": "tools/research_wasm_reduction.ps1",
+  "provenance": {
+    "rust": "rustc 1.95.0 (59807616e 2026-04-14)",
+    "wasmPack": "wasm-pack 0.14.0",
+    "node": "v24.15.0",
+    "flags": "-C target-feature=+simd128; wasm-pack --target web --release; opt-level=3, fat LTO, codegen-units=1",
+    "sourceHashes": {
+      "golf-core/Cargo.toml": "2b839d0cce793e6ebc9005226cc51ebe2aab849e7ba5bf502656e05fbb14e931",
+      "golf-core/Cargo.lock": "e7332a428364c65f4c936fa920c8733b2a63f90154e5a6dffdc12c92cab661f7",
+      "golf-core/src/lib.rs": "31f08cf9cfaef1acac9e2716257f46f0dbd088b37618ac45ef646e0b37e5dbca",
+      "golf-core/src/lanes.rs": "29c78aee60f5b81f7d0f04f6521a08be4061279308c23b3e02717718b6777c81",
+      "golf-core/src/ground.rs": "9d71b82cf292d66fcbcf1a637771f7f19e30f2da16085cfc00852dd236f34995"
+    },
+    "fullSourceHash": "31f08cf9cfaef1acac9e2716257f46f0dbd088b37618ac45ef646e0b37e5dbca",
+    "minimalSourceHash": "fdfbe822f2d7014cd00defc2037e9e5b5b15ff8c141eefee8e14855e8ff2ae93"
+  },
+  "scope": "기본 SharedRe12, 무풍, SIMD f32 일괄 API. f64 경로, 환경 내보내기, field 전환, ground getter를 제외함.",
+  "sample": {
+    "seed": 42,
+    "mph": [
+      60,
+      180
+    ],
+    "launchDeg": [
+      5,
+      40
+    ],
+    "spinRpm": [
+      500,
+      10500
+    ],
+    "axisDeg": [
+      -40,
+      40
+    ],
+    "outputs": [
+      "carry_m",
+      "lateral_m",
+      "apex_m",
+      "land_deg"
+    ]
+  },
+  "meta": [
+    {
+      "variant": "full",
+      "path": "C:\\dev\\golf-onefield\\flightbench\\target\\research-wasm-reduction\\full\\pkg\\golf_core_bg.wasm",
+      "bytes": 121402,
+      "gzipBytes": 37319,
+      "jsBytes": 19601,
+      "jsGzipBytes": 4794,
+      "sha256": "2694a7226d1dae1eabbe12828b6d8150a792d89e9b2be5bd094a18e30bada5b7",
+      "jsSha256": "727dd3b2f186ccd74c3a83bc93b8d26520852a4045182abb4055026135d1e3dd",
+      "exports": [
+        "memory",
+        "__wbg_flight_free",
+        "app_min_steps",
+        "app_step",
+        "batch",
+        "batch_env",
+        "batch_env_opts",
+        "batch_opts",
+        "batch_simd",
+        "batch_simd_env",
+        "batch_simd_env_opts",
+        "batch_simd_opts",
+        "default_step",
+        "field",
+        "flight_apex_m",
+        "flight_carry_m",
+        "flight_carry_yd",
+        "flight_land_deg",
+        "flight_land_mph",
+        "flight_lateral_m",
+        "flight_path",
+        "flight_roll_yd",
+        "flight_steps",
+        "flight_time_s",
+        "flight_total_reliable",
+        "flight_total_yd",
+        "fly_env",
+        "fly_f32",
+        "fly_f64",
+        "fly_flat",
+        "has_simd",
+        "set_field",
+        "__abort_handler",
+        "__instance_terminated",
+        "__wbindgen_externrefs",
+        "__wbindgen_malloc",
+        "__wbindgen_free",
+        "__wbindgen_start"
+      ]
+    },
+    {
+      "variant": "minimal",
+      "path": "C:\\dev\\golf-onefield\\flightbench\\target\\research-wasm-reduction\\minimal\\pkg\\golf_core_bg.wasm",
+      "bytes": 47900,
+      "gzipBytes": 17122,
+      "jsBytes": 4927,
+      "jsGzipBytes": 1502,
+      "sha256": "44562813008c144ff0801c2dc3e532c072430004f036968f32480294ad13802a",
+      "jsSha256": "413720233115537c2549a8a76774b803eaa0ab4c1233148c3f6a5f029080c6ad",
+      "exports": [
+        "memory",
+        "mini_batch",
+        "__abort_handler",
+        "__instance_terminated",
+        "__wbindgen_externrefs",
+        "__wbindgen_malloc",
+        "__wbindgen_free",
+        "__wbindgen_start"
+      ]
+    }
+  ],
+  "savings": {
+    "wasmRawPercent": 60.544307342547896,
+    "wasmGzipPercent": 54.11988531311128,
+    "wasmAndJsRawPercent": 62.53483968426203,
+    "wasmAndJsGzipPercent": 55.776126136822356
+  },
+  "comparisons": [
+    {
+      "h": 0.05,
+      "n": 4000,
+      "outputElements": 16000,
+      "mismatch": 0,
+      "maxAbs": 0
+    },
+    {
+      "h": 0.137,
+      "n": 4000,
+      "outputElements": 16000,
+      "mismatch": 0,
+      "maxAbs": 0
+    }
+  ],
+  "limitations": [
+    "타 제품 API 구성은 별도 빌드 필요",
+    "CPU 시간이나 모바일 성능은 측정하지 않음",
+    "엔진끼리의 수치 동치이며 실측 물리 검증은 아님"
+  ]
+}

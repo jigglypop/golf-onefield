@@ -30,36 +30,8 @@
 use flightbench::engine::*;
 use std::time::Instant;
 
-/// (볼스피드 mph, 발사각 deg, 스핀 rpm, 캐리 yd, 최고 높이 yd, 착지각 deg)
-const PGA12: [[f64; 6]; 12] = [
-    [167.0, 10.9, 2686.0, 275.0, 32.0, 38.0],
-    [158.0, 9.2, 3655.0, 243.0, 30.0, 43.0],
-    [152.0, 9.4, 4350.0, 230.0, 31.0, 47.0],
-    [146.0, 10.2, 4437.0, 225.0, 29.0, 47.0],
-    [142.0, 10.4, 4630.0, 212.0, 27.0, 46.0],
-    [137.0, 11.0, 4836.0, 203.0, 28.0, 48.0],
-    [132.0, 12.1, 5361.0, 194.0, 31.0, 49.0],
-    [127.0, 14.1, 6231.0, 183.0, 30.0, 50.0],
-    [120.0, 16.3, 7097.0, 172.0, 32.0, 50.0],
-    [115.0, 18.1, 7998.0, 160.0, 31.0, 50.0],
-    [109.0, 20.4, 8647.0, 148.0, 30.0, 51.0],
-    [102.0, 24.2, 9304.0, 136.0, 29.0, 52.0],
-];
-const PGA_LAB: [&str; 12] = ["DR", "3W", "5W", "HY", "3i", "4i", "5i", "6i", "7i", "8i", "9i", "PW"];
-const LPGA11: [[f64; 6]; 11] = [
-    [140.0, 13.2, 2611.0, 218.0, 25.0, 37.0],
-    [132.0, 11.2, 2704.0, 195.0, 23.0, 39.0],
-    [128.0, 12.1, 4501.0, 185.0, 26.0, 43.0],
-    [123.0, 12.7, 4693.0, 174.0, 25.0, 46.0],
-    [116.0, 14.3, 4801.0, 169.0, 24.0, 43.0],
-    [112.0, 14.8, 5081.0, 161.0, 23.0, 45.0],
-    [109.0, 17.1, 5943.0, 152.0, 25.0, 46.0],
-    [104.0, 19.0, 6699.0, 141.0, 26.0, 47.0],
-    [100.0, 20.8, 7494.0, 130.0, 25.0, 47.0],
-    [93.0, 23.9, 7589.0, 119.0, 26.0, 47.0],
-    [86.0, 25.7, 8403.0, 107.0, 23.0, 48.0],
-];
-const LPGA_LAB: [&str; 11] = ["DR", "3W", "5W", "7W", "4i", "5i", "6i", "7i", "8i", "9i", "PW"];
+// 투어 표(PGA 12행, LPGA 11행)는 harness.rs 의 것 하나만 쓴다 (이 파일에 복사본을 두지 않는다)
+use flightbench::harness::{LPGA11, LPGA_LAB, PGA12, PGA_LAB};
 
 /// 2차원(사이드 스핀 0) f64 RK4: (캐리 yd, 최고 높이 yd, 착지각 deg)
 fn obs<A: Aero>(ae: &A, mph: f64, deg: f64, rpm: f64, dt: f64) -> [f64; 3] {
@@ -111,76 +83,23 @@ fn obs<A: Aero>(ae: &A, mph: f64, deg: f64, rpm: f64, dt: f64) -> [f64; 3] {
     [f64::NAN; 3]
 }
 
-fn solve<const P: usize>(mut a: [[f64; 16]; P]) -> [f64; P] {
-    for c in 0..P {
-        let p = (c..P).max_by(|&i, &j| a[i][c].abs().total_cmp(&a[j][c].abs())).unwrap();
-        a.swap(c, p);
-        for r in 0..P {
-            if r != c {
-                let f = a[r][c] / a[c][c];
-                for k in c..=P {
-                    a[r][k] -= f * a[c][k];
-                }
-            }
-        }
-    }
-    std::array::from_fn(|i| a[i][P] / a[i][i])
-}
-
-/// 상자 제약 Levenberg–Marquardt. 반환 (매개변수, 비용)
+/// 상자 제약 Levenberg–Marquardt. 반환 (매개변수, 비용). 알고리즘은 공통 구현(lm.rs)이고, 여기서는 설정만 둔다:
+/// 상대 걸음 1e-6, 감쇠 A_xx(1+μ)+1e-12, 300회 × 안쪽 14번, 상대 개선 1e-13 이하에서 끝, 유한하지 않은 잔차는 비용 1e12.
 fn lm<const P: usize>(res: &dyn Fn(&[f64; P]) -> Vec<f64>, start: [f64; P], lo: [f64; P], hi: [f64; P]) -> ([f64; P], f64) {
-    let cost = |r: &[f64]| r.iter().map(|x| if x.is_finite() { x * x } else { 1e12 }).sum::<f64>();
-    let mut p = start;
-    let mut r = res(&p);
-    let mut mu = 1e-3;
-    for _ in 0..300 {
-        let m = r.len();
-        let mut jac = vec![[0.0f64; P]; m];
-        for k in 0..P {
-            let h = 1e-6 * p[k].abs().max(1e-3);
-            let mut q = p;
-            q[k] += h;
-            let rq = res(&q);
-            for i in 0..m {
-                jac[i][k] = (rq[i] - r[i]) / h;
-            }
-        }
-        let mut improved = false;
-        for _ in 0..14 {
-            let mut a = [[0.0f64; 16]; P];
-            for i in 0..m {
-                for x in 0..P {
-                    a[x][P] -= jac[i][x] * r[i];
-                    for y in 0..P {
-                        a[x][y] += jac[i][x] * jac[i][y];
-                    }
-                }
-            }
-            for x in 0..P {
-                a[x][x] *= 1.0 + mu;
-                a[x][x] += 1e-12;
-            }
-            let dp = solve::<P>(a);
-            let q: [f64; P] = std::array::from_fn(|k| (p[k] + dp[k]).clamp(lo[k], hi[k]));
-            let rq = res(&q);
-            if cost(&rq) < cost(&r) {
-                let rel = (cost(&r) - cost(&rq)) / cost(&r).max(1e-30);
-                p = q;
-                r = rq;
-                mu = (mu * 0.3).max(1e-12);
-                improved = true;
-                if rel < 1e-13 {
-                    return (p, cost(&r));
-                }
-                break;
-            }
-            mu *= 10.0;
-        }
-        if !improved {
-            break;
-        }
-    }
-    (p, cost(&r))
+    let cfg = flightbench::lm::LmCfg {
+        lo: &lo,
+        hi: &hi,
+        step: flightbench::lm::Step::Rel { rel: 1e-6, floor: 1e-3 },
+        damping: flightbench::lm::Damping::Mul,
+        max_iter: 300,
+        tries: 14,
+        mu_min: 1e-12,
+        stop_rel: 1e-13,
+        nonfinite_cost: Some(1e12),
+    };
+    let mut r = |q: &[f64]| res(<&[f64; P]>::try_from(q).unwrap());
+    let o = flightbench::lm::lm(&cfg, &start, &mut r, None);
+    (<[f64; P]>::try_from(o.p.as_slice()).unwrap(), o.cost)
 }
 
 /// 레이놀즈 계단: C_D 에 e / (1 + (|u|/u0)^2) — 저속에서 e 만큼 오르고 고속에서 사라진다

@@ -1,0 +1,21 @@
+[package]
+name = "golf-core"
+version = "0.1.0"
+edition = "2021"
+description = "골프공 장 비행 엔진 코어 (SharedRe 꼴, f32/f64 제네릭, wasm-bindgen 내보내기)"
+license = "UNLICENSED"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+wasm-bindgen = "0.2"
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+
+# wasm32 + simd128 에서 진짜 4레인 커널(W4)을 시험할 때만 쓴다 (test-wasm.sh). 네이티브 cargo test 에는 영향이 없다.
+[dev-dependencies]
+wasm-bindgen-test = "0.3"

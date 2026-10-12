@@ -77,6 +77,77 @@ export interface FlightOptions {
    * 장은 공기에 대한 속도 $\mathbf u - \mathbf u_{wind}$ 로 계산한다. 게임용 기능이며 자료로 검증하지 않았다.
    */
   wind?: { x: number; z: number };
+  /**
+   * 돌풍 (게임용, 자료로 검증하지 않았다). 평균 바람 `wind` 위에 시간에 따라 변하는 항을 더한다.
+   * 기본값은 없음(undefined, 진폭 0): 돌풍 없이 부르면 계산 경로가 예전과 같아 web_refs.csv 대조 결과(0.05 yd)가 그대로다.
+   */
+  gust?: GustOptions;
+}
+
+/**
+ * 돌풍 설정. 시각 $t$ 의 돌풍 벡터 (샷 틀, m/s):
+ * $\mathbf g(t) = A\,(a(t)\,\hat w + 0.4\,b(t)\,\hat w_\perp)$,
+ * $a(t) = [\sin(\omega_1 t+\varphi_1) + 0.6\sin(\omega_2 t+\varphi_2)]/1.6$ 이고 $b(t)$ 도 같은 꼴(다른 각주파수·위상).
+ * $\hat w$ 는 평균 바람 방향(바람이 0 이면 +x), $\hat w_\perp$ 는 그 왼쪽 법선이다.
+ * 각주파수·위상은 `seed` 에서 정해져 같은 씨앗이면 같은 돌풍이다 (결정적).
+ */
+export interface GustOptions {
+  /** 진폭 A (m/s). 0 이하이면 돌풍 없음 */
+  amp: number;
+  /** 샷마다 다른 씨앗 (정수) */
+  seed: number;
+  /** 주된 변동 주기 (s). 기본 2.8 */
+  period?: number;
+}
+
+/** 돌풍 벡터를 계산하는 내부 상태 */
+interface GustCtx {
+  amp: number;
+  /** 평균 바람 단위 방향과 그 왼쪽 법선 (샷 틀) */
+  ux: number;
+  uz: number;
+  px: number;
+  pz: number;
+  w: [number, number, number, number];
+  p: [number, number, number, number];
+  /** 샷 틀 → 적분 틀 회전 (방위각) */
+  c: number;
+  s: number;
+  out: Float64Array;
+}
+
+/** 결정적 난수 [0, 1) */
+function hash01(seed: number, k: number): number {
+  let t = (Math.imul(seed | 0, 0x9e3779b1) + Math.imul(k + 1, 0x85ebca6b) + 0x6d2b79f5) | 0;
+  t = Math.imul(t ^ (t >>> 15), t | 1);
+  t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+  return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+}
+
+function makeGust(g: GustOptions, wx: number, wz: number, cphi: number, sphi: number): GustCtx {
+  const speed = Math.hypot(wx, wz);
+  const ux = speed > 0.05 ? wx / speed : 1;
+  const uz = speed > 0.05 ? wz / speed : 0;
+  const base = (2 * Math.PI) / (g.period ?? 2.8);
+  const w: GustCtx['w'] = [base * (0.8 + 0.4 * hash01(g.seed, 0)), base * (2.1 + 0.6 * hash01(g.seed, 1)), base * (0.9 + 0.5 * hash01(g.seed, 2)), base * (2.4 + 0.7 * hash01(g.seed, 3))];
+  const p: GustCtx['p'] = [2 * Math.PI * hash01(g.seed, 4), 2 * Math.PI * hash01(g.seed, 5), 2 * Math.PI * hash01(g.seed, 6), 2 * Math.PI * hash01(g.seed, 7)];
+  return { amp: g.amp, ux, uz, px: -uz, pz: ux, w, p, c: cphi, s: sphi, out: new Float64Array(2) };
+}
+
+/** 시각 t (s) 의 돌풍 벡터 (샷 틀, m/s) 를 gc.out 에 */
+function gustShot(gc: GustCtx, t: number): void {
+  const a = (Math.sin(gc.w[0] * t + gc.p[0]) + 0.6 * Math.sin(gc.w[1] * t + gc.p[1])) / 1.6;
+  const b = (Math.sin(gc.w[2] * t + gc.p[2]) + 0.6 * Math.sin(gc.w[3] * t + gc.p[3])) / 1.6;
+  gc.out[0] = gc.amp * (a * gc.ux + 0.4 * b * gc.px);
+  gc.out[1] = gc.amp * (a * gc.uz + 0.4 * b * gc.pz);
+}
+
+/** 시각 t (s) 의 돌풍 벡터 (샷 틀, m/s). HUD 표시·시험용. `wind` 는 평균 바람 */
+export function gustVector(g: GustOptions, wind: { x: number; z: number }, t: number): { x: number; z: number } {
+  if (!(g.amp > 0)) return { x: 0, z: 0 };
+  const gc = makeGust(g, wind.x, wind.z, 1, 0);
+  gustShot(gc, t);
+  return { x: gc.out[0]!, z: gc.out[1]! };
 }
 
 const N = 8; // x y z ux uy uz w t
@@ -84,13 +155,21 @@ const N = 8; // x y z ux uy uz w t
 /**
  * τ 에 대한 도함수. harness.rs Model::f3 와 같은 식·순서에 dt/dτ = g 를 더했다.
  * 바람 (wx, wz, 무차원, 적분 틀): 장은 공기에 대한 속도 r = u − wind 로, 걸음 재매개 g 는 땅에 대한 |u| 로 둔다.
- * 바람이 0 이면 러스트 식과 같다.
+ * 바람이 0 이면 러스트 식과 같다. 돌풍(gc)이 있으면 바람에 시각 t = s[7] 의 돌풍을 더한다 (없으면 아무것도 바뀌지 않는다).
  */
-function deriv(m: AeroModel, s: Float64Array, oy: number, oz: number, out: Float64Array, kk: AeroOut, wx = 0, wz = 0): void {
+function deriv(m: AeroModel, s: Float64Array, oy: number, oz: number, out: Float64Array, kk: AeroOut, wx0 = 0, wz0 = 0, gc: GustCtx | null = null): void {
   const ux = s[3]!;
   const uy = s[4]!;
   const uz = s[5]!;
   const w = s[6]!;
+  let wx = wx0;
+  let wz = wz0;
+  if (gc !== null) {
+    gustShot(gc, s[7]! * T_S);
+    // 샷 틀 → 적분 틀: 방위각만큼 거꾸로 돌리고 무차원화
+    wx += (gc.out[0]! * gc.c + gc.out[1]! * gc.s) / U_MS;
+    wz += (-gc.out[0]! * gc.s + gc.out[1]! * gc.c) / U_MS;
+  }
   const rx = ux - wx;
   const rz = uz - wz;
   const sp = Math.sqrt(ux * ux + uy * uy + uz * uz);
@@ -157,6 +236,8 @@ export function simulate(launch: EngineLaunch, opt: FlightOptions = {}): FlightR
   const wzo = opt.wind?.z ?? 0;
   const wx = (wxo * cphi + wzo * sphi) / U_MS;
   const wz = (-wxo * sphi + wzo * cphi) / U_MS;
+  // 돌풍 (진폭 0 이거나 없으면 null: 예전 계산 경로 그대로)
+  const gc = opt.gust && opt.gust.amp > 0 ? makeGust(opt.gust, wxo, wzo, cphi, sphi) : null;
 
   const kk: AeroOut = { kd: 0, kl: 0 };
   let s = new Float64Array(N);
@@ -172,7 +253,7 @@ export function simulate(launch: EngineLaunch, opt: FlightOptions = {}): FlightR
   s[3] = v0 * Math.cos(th);
   s[4] = v0 * Math.sin(th);
   s[6] = s0 * v0;
-  deriv(m, s, oy, oz, k1, kk, wx, wz);
+  deriv(m, s, oy, oz, k1, kk, wx, wz, gc);
 
   const samples: TrajectorySample[] = [];
   if (keep) samples.push(toSample(0, 0, 0, 0, s[3]!, s[4]!, s[5]!, cphi, sphi));
@@ -185,13 +266,13 @@ export function simulate(launch: EngineLaunch, opt: FlightOptions = {}): FlightR
 
   for (let step = 0; step < maxSteps; step++) {
     for (let i = 0; i < N; i++) tmp[i] = s[i]! + h2 * k1[i]!;
-    deriv(m, tmp, oy, oz, k2, kk, wx, wz);
+    deriv(m, tmp, oy, oz, k2, kk, wx, wz, gc);
     for (let i = 0; i < N; i++) tmp[i] = s[i]! + h2 * k2[i]!;
-    deriv(m, tmp, oy, oz, k3, kk, wx, wz);
+    deriv(m, tmp, oy, oz, k3, kk, wx, wz, gc);
     for (let i = 0; i < N; i++) tmp[i] = s[i]! + h * k3[i]!;
-    deriv(m, tmp, oy, oz, k4, kk, wx, wz);
+    deriv(m, tmp, oy, oz, k4, kk, wx, wz, gc);
     for (let i = 0; i < N; i++) n[i] = s[i]! + h6 * (k1[i]! + 2 * k2[i]! + 2 * k3[i]! + k4[i]!);
-    deriv(m, n, oy, oz, kn, kk, wx, wz);
+    deriv(m, n, oy, oz, kn, kk, wx, wz, gc);
 
     const y0 = s[1]!;
     const y1 = n[1]!;

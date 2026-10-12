@@ -1,10 +1,13 @@
 /**
  * 코스: 직접 설계한 9홀 + 롱드라이브 그리드 (실제 골프장 자료는 라이선스 문제로 쓰지 않는다).
+ * 홀 자료는 `courses/classic9.json` 에 있고, 이 파일은 그것을 읽어 `Hole` 로 바꾼다 (`buildHole`).
  *
  * 좌표: 홀마다 따로, 1 단위 = 1 m. 티는 원점 근처, 그린 쪽이 대체로 +x, +z 는 오른쪽 (convention.ts 와 같다).
  * 땅은 평평하다(y = 0). 그린만 기울기(높이 기울기 dh/dx, dh/dz)를 가지며, 굴림에만 쓴다.
  * 지면 우선순위: OB(경계 밖) > 물(땅 다각형 안은 제외: 섬 그린) > 벙커 > 그린 > 프린지 > 티 > 페어웨이 > 러프.
+ * 나무(`trees`)는 땅 높이를 바꾸지 않는다: 비행하는 공만 막는 원기둥이다 (obstacles.ts).
  */
+import classic9 from './courses/classic9.json';
 
 /** (x, z) m */
 export type Vec2 = readonly [number, number];
@@ -42,6 +45,16 @@ export interface Green extends Ellipse {
   slope: Vec2;
 }
 
+/**
+ * 나무 장애물: 바닥 (x, z) 에 선 원기둥 (반지름 r, 꼭대기 높이 h, m). 땅은 평평한 채 두고 날아가는 공만 막는다.
+ */
+export interface Tree {
+  x: number;
+  z: number;
+  r: number;
+  h: number;
+}
+
 export interface Hole {
   number: number;
   name: string;
@@ -58,6 +71,8 @@ export interface Hole {
   bounds: Vec2[];
   /** 물 위의 땅 (섬 그린 둘레 등): 이 안은 물이 아니다 */
   land?: Vec2[][];
+  /** 플레이 구역 안의 나무 (비행하는 공만 막는다) */
+  trees?: Tree[];
   /** 롱드라이브 그리드 (그린 없이 거리만 잰다) */
   kind?: 'longdrive';
 }
@@ -69,406 +84,37 @@ export const TEE_BOX: Vec2 = [5.5, 4];
 /** 홀컵 반지름 (m, 4.25 인치) */
 export const CUP_R = 0.054;
 
-export const HOLES: Hole[] = [
-  {
-    number: 1,
-    name: '솔숲 도그레그',
-    par: 4,
-    tee: [0, 0],
-    teeTarget: [225, 12],
-    pin: [341, 59],
-    fairways: [
-      {
-        path: [
-          [28, 0],
-          [120, 2],
-          [200, 8],
-          [255, 26],
-          [300, 46],
-          [322, 56],
-        ],
-        width: 34,
-      },
-    ],
-    green: { c: [338, 62], rx: 16, rz: 13, rot: 0.5, slope: [-0.012, 0.018] },
-    bunkers: [
-      { c: [222, -12], rx: 10, rz: 6, rot: 0.1 },
-      { c: [318, 82], rx: 7, rz: 5, rot: 0.6 },
-      { c: [357, 44], rx: 6, rz: 4.5, rot: -0.4 },
-    ],
-    water: [],
-    bounds: [
-      [-25, -45],
-      [240, -45],
-      [300, -10],
-      [390, 20],
-      [395, 105],
-      [300, 110],
-      [230, 70],
-      [180, 50],
-      [-25, 45],
-    ],
-  },
-  {
-    number: 2,
-    name: '호수 건너기',
-    par: 3,
-    tee: [0, 0],
-    teeTarget: [153, -5],
-    pin: [153, -5],
-    fairways: [
-      {
-        path: [
-          [121, -8],
-          [131, -8],
-        ],
-        width: 20,
-      },
-    ],
-    green: { c: [150, -8], rx: 14, rz: 11, rot: 0.2, slope: [0.018, 0.006] },
-    bunkers: [
-      { c: [168, -1], rx: 6, rz: 4, rot: 0.3 },
-      { c: [146, -24], rx: 7, rz: 4, rot: 0 },
-    ],
-    water: [
-      [
-        [26, -36],
-        [104, -40],
-        [112, -18],
-        [110, 14],
-        [100, 30],
-        [38, 32],
-        [22, 8],
-      ],
-    ],
-    bounds: [
-      [-25, -60],
-      [200, -60],
-      [200, 45],
-      [-25, 45],
-    ],
-  },
-  {
-    number: 3,
-    name: '개울 넘어 긴 여정',
-    par: 5,
-    tee: [0, 0],
-    teeTarget: [250, -8],
-    pin: [472, 33],
-    fairways: [
-      {
-        path: [
-          [28, 0],
-          [140, -6],
-          [250, -10],
-          [330, 4],
-          [390, 21],
-        ],
-        width: 36,
-      },
-      {
-        path: [
-          [426, 30],
-          [446, 33],
-        ],
-        width: 26,
-      },
-    ],
-    green: { c: [468, 36], rx: 17, rz: 13, rot: 0.3, slope: [-0.01, -0.016] },
-    bunkers: [
-      { c: [232, 14], rx: 9, rz: 5.5, rot: 0.2 },
-      { c: [268, -30], rx: 9, rz: 6, rot: -0.2 },
-      { c: [318, -14], rx: 8, rz: 5, rot: 0.4 },
-      { c: [455, 58], rx: 7, rz: 4.5, rot: 0.5 },
-      { c: [490, 22], rx: 6, rz: 4, rot: -0.6 },
-    ],
-    water: [
-      [
-        [400, -60],
-        [412, -60],
-        [420, 82],
-        [408, 82],
-      ],
-    ],
-    bounds: [
-      [-25, -55],
-      [330, -55],
-      [520, -10],
-      [525, 85],
-      [380, 80],
-      [200, 45],
-      [-25, 40],
-    ],
-  },
-  {
-    number: 4,
-    name: '섬 그린',
-    par: 3,
-    tee: [0, 0],
-    teeTarget: [136, 3],
-    pin: [136, 3],
-    fairways: [],
-    green: { c: [134, 4], rx: 12, rz: 10, rot: 0.15, slope: [0.012, -0.008] },
-    bunkers: [],
-    water: [
-      [
-        [40, -45],
-        [185, -45],
-        [190, 50],
-        [40, 52],
-      ],
-    ],
-    land: [ring(134, 4, 18, 16, 0.15)],
-    bounds: [
-      [-25, -60],
-      [205, -60],
-      [205, 65],
-      [-25, 65],
-    ],
-  },
-  {
-    number: 5,
-    name: '왼쪽으로 굽은 길',
-    par: 4,
-    tee: [0, 0],
-    teeTarget: [230, -10],
-    pin: [355, -77],
-    fairways: [
-      {
-        path: [
-          [28, 0],
-          [150, 0],
-          [230, -8],
-          [290, -32],
-          [338, -62],
-        ],
-        width: 32,
-      },
-    ],
-    green: { c: [352, -74], rx: 15, rz: 12, rot: -0.6, slope: [0.01, 0.015] },
-    bunkers: [
-      { c: [245, 14], rx: 9, rz: 5, rot: -0.2 },
-      { c: [235, -32], rx: 7, rz: 4.5, rot: -0.4 },
-      { c: [335, -56], rx: 6, rz: 4, rot: -0.6 },
-      { c: [372, -90], rx: 6, rz: 4, rot: -0.6 },
-    ],
-    water: [
-      [
-        [362, -52],
-        [400, -48],
-        [404, -22],
-        [372, -25],
-      ],
-    ],
-    bounds: [
-      [-25, -45],
-      [200, -45],
-      [280, -80],
-      [330, -110],
-      [400, -115],
-      [420, -60],
-      [410, 0],
-      [300, 30],
-      [200, 40],
-      [-25, 40],
-    ],
-  },
-  {
-    number: 6,
-    name: '짧은 파4',
-    par: 4,
-    tee: [0, 0],
-    teeTarget: [200, 6],
-    pin: [278, -2],
-    fairways: [
-      {
-        path: [
-          [28, 0],
-          [120, 3],
-          [200, 6],
-          [248, 1],
-        ],
-        width: 28,
-      },
-    ],
-    green: { c: [275, -4], rx: 14, rz: 11, rot: 0, slope: [0.016, 0] },
-    bunkers: [
-      { c: [250, -13], rx: 6, rz: 3.5, rot: 0.3 },
-      { c: [255, 12], rx: 6, rz: 4, rot: -0.3 },
-      { c: [175, -14], rx: 8, rz: 4.5, rot: 0.1 },
-      { c: [205, 20], rx: 7, rz: 4, rot: 0 },
-    ],
-    water: [
-      [
-        [225, -40],
-        [300, -42],
-        [305, -24],
-        [240, -21],
-      ],
-    ],
-    bounds: [
-      [-25, -55],
-      [320, -55],
-      [325, 45],
-      [-25, 45],
-    ],
-  },
-  {
-    number: 7,
-    name: '긴 파3',
-    par: 3,
-    tee: [0, 0],
-    teeTarget: [183, 8],
-    pin: [183, 8],
-    fairways: [
-      {
-        path: [
-          [130, 4],
-          [160, 6],
-        ],
-        width: 22,
-      },
-    ],
-    green: { c: [180, 7], rx: 15, rz: 12, rot: 0.1, slope: [-0.012, 0.01] },
-    bunkers: [
-      { c: [168, -10], rx: 7, rz: 4, rot: 0.2 },
-      { c: [172, 24], rx: 7, rz: 4, rot: -0.2 },
-      { c: [200, 10], rx: 5, rz: 3.5, rot: 1.2 },
-    ],
-    water: [],
-    bounds: [
-      [-25, -50],
-      [225, -50],
-      [225, 55],
-      [-25, 55],
-    ],
-  },
-  {
-    number: 8,
-    name: '물길',
-    par: 4,
-    tee: [0, 0],
-    teeTarget: [240, 8],
-    pin: [375, 5],
-    fairways: [
-      {
-        path: [
-          [28, 0],
-          [140, 6],
-          [240, 10],
-          [330, 6],
-          [356, 4],
-        ],
-        width: 34,
-      },
-    ],
-    green: { c: [372, 2], rx: 16, rz: 12, rot: 0, slope: [0.01, -0.014] },
-    bunkers: [
-      { c: [250, 32], rx: 9, rz: 5, rot: 0 },
-      { c: [365, 22], rx: 7, rz: 4, rot: 0.2 },
-      { c: [393, 0], rx: 4, rz: 6, rot: 0 },
-    ],
-    water: [
-      [
-        [60, -28],
-        [380, -30],
-        [400, -60],
-        [60, -70],
-      ],
-    ],
-    bounds: [
-      [-25, -80],
-      [420, -80],
-      [420, 55],
-      [-25, 55],
-    ],
-  },
-  {
-    number: 9,
-    name: '마지막 홀',
-    par: 5,
-    tee: [0, 0],
-    teeTarget: [250, 12],
-    pin: [490, -15],
-    fairways: [
-      {
-        path: [
-          [28, 0],
-          [150, 6],
-          [250, 14],
-          [330, -6],
-          [380, -22],
-        ],
-        width: 34,
-      },
-      {
-        path: [
-          [408, -26],
-          [452, -20],
-        ],
-        width: 28,
-      },
-    ],
-    green: { c: [486, -12], rx: 17, rz: 13, rot: 0.2, slope: [-0.014, 0.008] },
-    bunkers: [
-      { c: [238, 34], rx: 9, rz: 5, rot: 0.1 },
-      { c: [318, -26], rx: 8, rz: 5, rot: -0.3 },
-      { c: [470, -32], rx: 7, rz: 4, rot: 0.2 },
-      { c: [508, -2], rx: 4, rz: 6, rot: 0.4 },
-    ],
-    water: [
-      [
-        [388, -80],
-        [398, -80],
-        [400, 60],
-        [390, 60],
-      ],
-      [
-        [474, 9],
-        [530, 11],
-        [532, 40],
-        [478, 36],
-      ],
-    ],
-    bounds: [
-      [-25, -55],
-      [300, -60],
-      [545, -50],
-      [545, 55],
-      [300, 60],
-      [-25, 45],
-    ],
-  },
-];
+// ------------------------------------------------------------------ 자료 읽기
+
+/** 섬 둘레 규격: [cx, cz, rx, rz, rot] → `ring()` 으로 다각형을 만든다 */
+type RingSpec = readonly [number, number, number, number, number];
+
+/** JSON 에 적힌 홀. `land` 대신 `landRings` 규격을 둔다 */
+type RawHole = Omit<Hole, 'land' | 'tee' | 'teeTarget' | 'pin' | 'fairways' | 'green' | 'bunkers' | 'water' | 'bounds' | 'trees'> & {
+  tee: number[];
+  teeTarget: number[];
+  pin: number[];
+  fairways: { path: number[][]; width: number }[];
+  green: { c: number[]; rx: number; rz: number; rot: number; slope: number[] };
+  bunkers: { c: number[]; rx: number; rz: number; rot: number }[];
+  water: number[][][];
+  bounds: number[][];
+  landRings?: RingSpec[];
+  trees?: Tree[];
+};
+
+/** JSON 홀 → Hole. `landRings` 는 섬 둘레 다각형 `land` 로 펼친다 (옛 코드의 `ring()` 호출과 같은 값) */
+export function buildHole(raw: unknown): Hole {
+  const { landRings, ...rest } = raw as RawHole;
+  const hole = rest as unknown as Hole;
+  if (landRings && landRings.length > 0) hole.land = landRings.map(([cx, cz, rx, rz, rot]) => ring(cx, cz, rx, rz, rot));
+  return hole;
+}
+
+export const HOLES: Hole[] = (classic9.holes as unknown[]).map(buildHole);
 
 /** 롱드라이브 그리드: 폭 50 m 페어웨이, 좌우 45 m 밖은 OB. 거리는 티에서 +x 로 잰다 */
-export const LONG_DRIVE: Hole = {
-  number: 0,
-  name: '롱드라이브 그리드',
-  par: 0,
-  tee: [0, 0],
-  teeTarget: [300, 0],
-  pin: [520, 0],
-  fairways: [
-    {
-      path: [
-        [24, 0],
-        [430, 0],
-      ],
-      width: 50,
-    },
-  ],
-  green: { c: [520, 0], rx: 6, rz: 6, rot: 0, slope: [0, 0] },
-  bunkers: [],
-  water: [],
-  bounds: [
-    [-25, -45],
-    [470, -45],
-    [470, 45],
-    [-25, 45],
-  ],
-  kind: 'longdrive',
-};
+export const LONG_DRIVE: Hole = buildHole(classic9.longDrive);
 
 /** 니어핀 챌린지 홀 (섬 그린) */
 export const CTP_HOLE = 3;

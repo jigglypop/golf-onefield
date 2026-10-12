@@ -6,8 +6,9 @@ import { useEffect, useMemo, useRef } from 'react';
 
 import { useThree } from '@react-three/fiber';
 import { useEngineFrame } from 'gaesup-world';
-import { BackSide, BufferAttribute, Color, Fog, SphereGeometry, Vector3, type Mesh, type Sprite } from 'three';
+import { BackSide, BufferAttribute, Color, FogExp2, SphereGeometry, Vector3, type Mesh, type Sprite } from 'three';
 
+import { cloudTexture } from '../photo/clouds.ts';
 import { COLORS, SUN_POSITION } from './layout.ts';
 import { sunTexture } from './textures.ts';
 
@@ -21,7 +22,7 @@ export function SkyAndFog() {
   useEffect(() => {
     const prevFog = scene.fog;
     const prevBg = scene.background;
-    scene.fog = new Fog(COLORS.fog, 320, 2600);
+    scene.fog = new FogExp2(COLORS.fog, 0.00017); // 멀리 산이 겹겹이 푸르스름하게 바랜다 (3 km 에서 21 %, 6 km 에서 60 %, 12 km 에서 거의 안개색)
     scene.background = new Color(COLORS.skyHorizon);
     return () => {
       scene.fog = prevFog;
@@ -48,21 +49,30 @@ export function SkyAndFog() {
     return g;
   }, []);
   const sun = useMemo(() => sunTexture(), []);
+  const clouds = useMemo(() => cloudTexture(0.2, 5), []);
+  const cloudGeo = useMemo(() => new SphereGeometry(DOME_R * 0.97, 48, 24), []);
   useEffect(
     () => () => {
       geometry.dispose();
       sun.dispose();
+      clouds.dispose();
+      cloudGeo.dispose();
     },
-    [geometry, sun],
+    [geometry, sun, clouds, cloudGeo],
   );
 
   const dome = useRef<Mesh>(null);
+  const cloudDome = useRef<Mesh>(null);
   const disc = useRef<Sprite>(null);
   useEngineFrame(
     'effects',
-    () => {
+    (delta) => {
       const cam = get().camera;
       dome.current?.position.copy(cam.position);
+      if (cloudDome.current) {
+        cloudDome.current.position.copy(cam.position);
+        cloudDome.current.rotation.y += delta * 0.004; // 구름이 천천히 흐른다
+      }
       disc.current?.position.copy(cam.position).addScaledVector(SUN_DIR, DOME_R * 0.85);
     },
     { label: 'golf:sky' },
@@ -72,6 +82,9 @@ export function SkyAndFog() {
     <group userData={{ intangible: true }}>
       <mesh ref={dome} geometry={geometry} renderOrder={-10} frustumCulled={false}>
         <meshBasicMaterial vertexColors side={BackSide} fog={false} depthWrite={false} toneMapped={false} />
+      </mesh>
+      <mesh ref={cloudDome} geometry={cloudGeo} renderOrder={-9} frustumCulled={false}>
+        <meshBasicMaterial map={clouds} transparent side={BackSide} fog={false} depthWrite={false} toneMapped={false} />
       </mesh>
       <sprite ref={disc} scale={[240, 240, 1]} renderOrder={-9} frustumCulled={false}>
         <spriteMaterial map={sun} fog={false} depthWrite={false} toneMapped={false} transparent />

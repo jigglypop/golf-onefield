@@ -80,8 +80,9 @@ export function GameCamera() {
         r.orbit += Math.min(delta, 0.1) * 0.05;
         const cx = (h.tee[0] + h.pin[0]) / 2;
         const cz = (h.tee[1] + h.pin[1]) / 2;
-        r.dPos.set(cx + Math.cos(r.orbit) * 210, 70, cz + Math.sin(r.orbit) * 210);
-        r.dLook.set(cx, 0, cz);
+        // 낮게 천천히 도는 항공 촬영: 능선과 하늘이 같이 보이게
+        r.dPos.set(cx + Math.cos(r.orbit) * 215, 48, cz + Math.sin(r.orbit) * 215);
+        r.dLook.set(cx, 10, cz);
         posRate = 1.2;
         lookRate = 1.5;
         near = 0.5;

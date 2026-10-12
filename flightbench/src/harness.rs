@@ -44,6 +44,8 @@ pub struct Model {
     pub kl_src: String,
     pub pnames: Vec<String>,
     pub p: Vec<f64>,
+    /// 만들 때의 시작값. 교차검증이 접은 자료로 다시 맞출 때 여기서 출발한다 (`reset`)
+    pub p_init: Vec<f64>,
     pub lo: Vec<f64>,
     pub hi: Vec<f64>,
     pub beta_idx: Option<usize>,
@@ -65,6 +67,7 @@ impl Model {
             kl_src: kl.into(),
             pnames: params.iter().map(|p| p.0.to_string()).collect(),
             p: params.iter().map(|p| p.1).collect(),
+            p_init: params.iter().map(|p| p.1).collect(),
             lo: params.iter().map(|p| p.2).collect(),
             hi: params.iter().map(|p| p.3).collect(),
             beta_idx: params.iter().position(|p| p.0 == "beta"),
@@ -74,6 +77,29 @@ impl Model {
 
     pub fn free(&self) -> Vec<usize> {
         (0..self.p.len()).filter(|&i| self.hi[i] > self.lo[i]).collect()
+    }
+
+    /// 매개변수를 만들 때의 시작값으로 되돌린다. 교차검증은 접마다 이것으로 되돌린 뒤 **훈련 행만으로** 다시 맞춘다:
+    /// 전체 자료로 맞춘 값에서 출발하면 뺀 행의 정보가 시작점으로 새어 들어간다.
+    pub fn reset(&mut self) {
+        self.p.clone_from(&self.p_init);
+    }
+
+    /// 변수표 [u, w, S, Re, 매개변수...] 를 만들어 f 에 준다. 매개변수가 28개 이하면 스택 배열을 쓴다
+    /// (obs 가 호출마다 Vec 을 새로 만들던 것을 없앤다).
+    #[inline]
+    fn with_vars<R>(&self, f: impl FnOnce(&mut [f64]) -> R) -> R {
+        const STACK: usize = 32;
+        let nv = 4 + self.p.len();
+        if nv <= STACK {
+            let mut buf = [0.0f64; STACK];
+            buf[4..nv].copy_from_slice(&self.p);
+            f(&mut buf[..nv])
+        } else {
+            let mut v = vec![0.0; nv];
+            v[4..].copy_from_slice(&self.p);
+            f(&mut v)
+        }
     }
 
     #[inline]
@@ -98,22 +124,26 @@ fn herm(t: f64) -> [f64; 4] {
 
 impl Flight for Model {
     fn obs(&self, mph: f64, deg: f64, rpm: f64) -> [f64; 3] {
+        self.with_vars(|vars| self.obs_with(vars, mph, deg, rpm))
+    }
+}
+
+impl Model {
+    fn obs_with(&self, vars: &mut [f64], mph: f64, deg: f64, rpm: f64) -> [f64; 3] {
         let [v0, th, s0] = dimless(mph, deg, rpm);
-        let mut vars = vec![0.0; 4 + self.p.len()];
-        vars[4..].copy_from_slice(&self.p);
         let h = self.h;
         let mut s = [0.0, 0.0, v0 * th.cos(), v0 * th.sin(), s0 * v0];
-        let mut k1 = self.f(&mut vars, &s);
+        let mut k1 = self.f(vars, &s);
         let mut apex = 0.0f64;
         for _ in 0..(12.0 / h) as usize {
             let a: [f64; 5] = std::array::from_fn(|i| s[i] + 0.5 * h * k1[i]);
-            let k2 = self.f(&mut vars, &a);
+            let k2 = self.f(vars, &a);
             let b: [f64; 5] = std::array::from_fn(|i| s[i] + 0.5 * h * k2[i]);
-            let k3 = self.f(&mut vars, &b);
+            let k3 = self.f(vars, &b);
             let c: [f64; 5] = std::array::from_fn(|i| s[i] + h * k3[i]);
-            let k4 = self.f(&mut vars, &c);
+            let k4 = self.f(vars, &c);
             let n: [f64; 5] = std::array::from_fn(|i| s[i] + h / 6.0 * (k1[i] + 2.0 * k2[i] + 2.0 * k3[i] + k4[i]));
-            let kn = self.f(&mut vars, &n);
+            let kn = self.f(vars, &n);
             // 최고점: y' 가 + 에서 - 로. 에르미트 3차의 도함수(2차식)의 근
             if k1[1] > 0.0 && kn[1] <= 0.0 {
                 let (y0, y1, m0, m1) = (s[1], n[1], k1[1] * h, kn[1] * h);
@@ -154,7 +184,18 @@ impl Flight for Model {
     }
 }
 
-/// 가우스-에르미트 n점 (표준정규 기댓값): 마디와 가중치. 골럽-웰시 대신 뉴턴으로 에르미트 다항식의 근을 찾는다.
+/// 가우스-에르미트 n점 (표준정규 기댓값): 마디와 가중치. 같은 n 은 한 번만 계산해 둔다
+/// (근 찾기가 2만 칸 훑기라 `usga_gh3` 가 호출마다 다시 하면 시험대의 모형 한 줄보다 비싸다).
+pub fn gh_cached(n: usize) -> &'static (Vec<f64>, Vec<f64>) {
+    use std::collections::HashMap;
+    use std::sync::{Mutex, OnceLock};
+    static CACHE: OnceLock<Mutex<HashMap<usize, &'static (Vec<f64>, Vec<f64>)>>> = OnceLock::new();
+    let mut map = CACHE.get_or_init(|| Mutex::new(HashMap::new())).lock().unwrap_or_else(|e| e.into_inner());
+    // 근 찾기는 잠금 안에서 한다: 같은 n 을 두 스레드가 동시에 계산하지 않게 (n 이 몇 개뿐이라 경합은 무시할 만하다)
+    *map.entry(n).or_insert_with(|| Box::leak(Box::new(gh(n))))
+}
+
+/// 가우스-에르미트 n점의 근과 가중치를 매번 새로 계산한다 (복사본이 필요할 때). 반복 호출에는 `gh_cached`.
 pub fn gh(n: usize) -> (Vec<f64>, Vec<f64>) {
     // 확률론자 에르미트 He_n 의 근과 가중치 w = n! / (n He_{n-1}(x))^2
     let he = |x: f64| -> (f64, f64) {
@@ -208,7 +249,7 @@ pub fn usga_gh_n<F: Flight + ?Sized>(m: &F, n: usize) -> Vec<f64> {
 
 /// 축별 점 수 (볼스피드, 발사각, 스핀)
 pub fn usga_gh3<F: Flight + ?Sized>(m: &F, n: [usize; 3]) -> Vec<f64> {
-    let (g0, g1, g2) = (gh(n[0]), gh(n[1]), gh(n[2]));
+    let (g0, g1, g2) = (gh_cached(n[0]), gh_cached(n[1]), gh_cached(n[2]));
     USGA.iter()
         .map(|r| {
             let (_, mv, sv, md, sd, ms, ss, _) = *r;
@@ -264,6 +305,11 @@ pub fn fit<T: Tunable>(m: &mut T, rows: &[[f64; 6]], w: [f64; 3]) -> f64 {
     lm(m, &|m: &T| tour_res(m, rows, w))
 }
 
+/// `fit` 과 같은 결과, 야코비안 열을 스레드로 나눠 구한다 (`lm_par`). 한 모형을 혼자 맞출 때 쓴다.
+pub fn fit_par<T: Tunable + Clone + Send>(m: &mut T, rows: &[[f64; 6]], w: [f64; 3]) -> f64 {
+    lm_par(m, &|m: &T| tour_res(m, rows, w))
+}
+
 /// 투어표 세 양 잔차 (가중치 0 인 양은 뺀다)
 fn tour_res<T: Flight + ?Sized>(m: &T, rows: &[[f64; 6]], w: [f64; 3]) -> Vec<f64> {
     let mut out = Vec::with_capacity(rows.len() * 3);
@@ -296,8 +342,19 @@ pub fn fit_mixed<T: Tunable + Flight3>(m: &mut T, rows: &[[f64; 6]], w: [f64; 3]
     })
 }
 
-/// 혼합 자료 k겹 교차검증 (꼴 고르기용). 투어 행과 FS 샷을 각각 i % k 로 나눠 한 겹씩 빼고 맞춘다
-/// (전체 맞춤값에서 시작). 반환 [투어 캐리, 투어 높이, 투어 착지, FS 캐리, FS 높이, 종합(훈련과 같은 가중 RMS)]
+/// `fit_mixed` 와 같은 결과, 야코비안 열을 스레드로 나눠 구한다.
+pub fn fit_mixed_par<T: Tunable + Flight3 + Clone + Send>(m: &mut T, rows: &[[f64; 6]], w: [f64; 3], fs: &[[f64; 6]], wfs: f64) -> f64 {
+    lm_par(m, &|m: &T| {
+        let mut r = tour_res(m, rows, w);
+        fs_res(m, fs, wfs, &mut r);
+        r
+    })
+}
+
+/// 혼합 자료 k겹 교차검증 (꼴 고르기용). 투어 행과 FS 샷을 각각 i % k 로 나눠 한 겹씩 빼고 맞춘다.
+/// 접마다 모형을 **시작값(`Model::reset`)으로 되돌린 뒤 훈련 행만으로** 맞춘다. 이전 판은 전체 자료로 맞춘 값에서
+/// 출발해 뺀 행의 정보가 시작점으로 새어 들어갔다.
+/// 반환 [투어 캐리, 투어 높이, 투어 착지, FS 캐리, FS 높이, 종합(훈련과 같은 가중 RMS)]
 pub fn kfold_mixed(m: &Model, rows: &[[f64; 6]], w: [f64; 3], fs: &[[f64; 6]], wfs: f64, k: usize) -> [f64; 6] {
     let folds: Vec<(Vec<[f64; 5]>, Vec<[f64; 2]>)> = std::thread::scope(|sc| {
         let hs: Vec<_> = (0..k)
@@ -307,6 +364,7 @@ pub fn kfold_mixed(m: &Model, rows: &[[f64; 6]], w: [f64; 3], fs: &[[f64; 6]], w
                     let tr: Vec<[f64; 6]> = rows.iter().enumerate().filter(|(i, _)| i % k != f).map(|(_, r)| *r).collect();
                     let fr: Vec<[f64; 6]> = fs.iter().enumerate().filter(|(i, _)| i % k != f).map(|(_, r)| *r).collect();
                     let mut mi = m;
+                    mi.reset();
                     fit_mixed(&mut mi, &tr, w, &fr, wfs);
                     let te: Vec<[f64; 5]> = rows.iter().enumerate().filter(|(i, _)| i % k == f).map(|(_, r)| {
                         let o = mi.obs(r[0], r[1], r[2]);
@@ -332,85 +390,80 @@ pub fn kfold_mixed(m: &Model, rows: &[[f64; 6]], w: [f64; 3], fs: &[[f64; 6]], w
     [col(0), col(1), col(2), fcol(0), fcol(1), (ss / nres as f64).sqrt()]
 }
 
-/// 상자 제약 레벤버그-마쿼트: 잔차 함수 하나를 줄인다. 자유 매개변수만 움직이고, 수가 아닌 잔차는 1e3 으로 둔다.
-pub fn lm<T: Tunable>(m: &mut T, res_raw: &dyn Fn(&T) -> Vec<f64>) -> f64 {
-    let mut p = m.get();
-    let (lo, hi) = m.bounds();
-    let n = p.len();
-    if n == 0 {
-        return f64::NAN;
+/// 레벤버그-마쿼트 설정: 상대 걸음 1e-6, 감쇠 A_xx(1+μ)+1e-12, 안쪽 14번, 상대 개선 1e-12 이하에서 끝
+fn lm_cfg<'a>(lo: &'a [f64], hi: &'a [f64]) -> crate::lm::LmCfg<'a> {
+    crate::lm::LmCfg {
+        lo,
+        hi,
+        step: crate::lm::Step::Rel { rel: 1e-6, floor: 1e-3 },
+        damping: crate::lm::Damping::Mul,
+        max_iter: 200,
+        tries: 14,
+        mu_min: 1e-12,
+        stop_rel: 1e-12,
+        nonfinite_cost: None,
     }
-    let res = |m: &T| -> Vec<f64> { res_raw(m).into_iter().map(|x| if x.is_finite() { x } else { 1e3 }).collect() };
-    let cost = |r: &[f64]| r.iter().map(|x| x * x).sum::<f64>();
-    let mut r = res(m);
-    let mut mu = 1e-3;
-    for _ in 0..200 {
-        let mut jac = vec![vec![0.0; n]; r.len()];
-        for k in 0..n {
-            let h = 1e-6 * p[k].abs().max(1e-3);
-            let mut q = p.clone();
-            q[k] += h;
-            m.set(&q);
-            let rq = res(m);
-            for i in 0..r.len() {
-                jac[i][k] = (rq[i] - r[i]) / h;
-            }
-        }
-        m.set(&p);
-        let mut improved = false;
-        for _ in 0..14 {
-            let mut a = vec![vec![0.0; n + 1]; n];
-            for i in 0..r.len() {
-                for x in 0..n {
-                    a[x][n] -= jac[i][x] * r[i];
-                    for y in 0..n {
-                        a[x][y] += jac[i][x] * jac[i][y];
-                    }
-                }
-            }
-            for x in 0..n {
-                a[x][x] = a[x][x] * (1.0 + mu) + 1e-12;
-            }
-            let dp = solve(a);
-            let q: Vec<f64> = (0..n).map(|k| (p[k] + dp[k]).clamp(lo[k], hi[k])).collect();
-            m.set(&q);
-            let rq = res(m);
-            if cost(&rq) < cost(&r) {
-                let rel = (cost(&r) - cost(&rq)) / cost(&r).max(1e-30);
-                p = q;
-                r = rq;
-                mu = (mu * 0.3).max(1e-12);
-                improved = true;
-                if rel < 1e-12 {
-                    return cost(&r);
-                }
-                break;
-            }
-            m.set(&p);
-            mu *= 10.0;
-        }
-        if !improved {
-            break;
-        }
-    }
-    cost(&r)
 }
 
-fn solve(mut a: Vec<Vec<f64>>) -> Vec<f64> {
-    let n = a.len();
-    for c in 0..n {
-        let p = (c..n).max_by(|&i, &j| a[i][c].abs().total_cmp(&a[j][c].abs())).unwrap();
-        a.swap(c, p);
-        for r in 0..n {
-            if r != c {
-                let f = a[r][c] / a[c][c];
-                for k in c..=n {
-                    a[r][k] -= f * a[c][k];
-                }
-            }
-        }
+/// 수가 아닌 잔차는 1e3 으로 둔다
+fn finite_res(r: Vec<f64>) -> Vec<f64> {
+    r.into_iter().map(|x| if x.is_finite() { x } else { 1e3 }).collect()
+}
+
+/// 상자 제약 레벤버그-마쿼트: 잔차 함수 하나를 줄인다. 자유 매개변수만 움직이고, 수가 아닌 잔차는 1e3 으로 둔다.
+/// 알고리즘은 `lm::lm` 하나다(직렬). 야코비안 열을 스레드로 나누는 판은 `lm_par`.
+pub fn lm<T: Tunable>(m: &mut T, res_raw: &dyn Fn(&T) -> Vec<f64>) -> f64 {
+    let p0 = m.get();
+    let (lo, hi) = m.bounds();
+    if p0.is_empty() {
+        return f64::NAN;
     }
-    (0..n).map(|i| a[i][n] / a[i][i]).collect()
+    let cfg = lm_cfg(&lo, &hi);
+    let mut res = |q: &[f64]| {
+        m.set(q);
+        finite_res(res_raw(m))
+    };
+    let out = crate::lm::lm(&cfg, &p0, &mut res, None);
+    m.set(&out.p);
+    out.cost
+}
+
+/// `lm` 과 같은 결과(비트까지)인데 야코비안의 열(매개변수마다 잔차 한 벌)을 `std::thread::scope` 로 나눠 구한다.
+/// 열은 서로 독립이고 출력은 열 번호 순으로 모으므로 결정적이다. 스레드마다 모형 복사본(`T: Clone + Send`)을 쓴다.
+/// 이미 여러 스레드 안에서 도는 호출(교차검증)에서는 쓰지 않는다 — 스레드가 겹쳐 오히려 느리다.
+pub fn lm_par<T: Tunable + Clone + Send>(m: &mut T, res_raw: &(dyn Fn(&T) -> Vec<f64> + Sync)) -> f64 {
+    let p0 = m.get();
+    let (lo, hi) = m.bounds();
+    if p0.is_empty() {
+        return f64::NAN;
+    }
+    let cfg = lm_cfg(&lo, &hi);
+    let mut work = m.clone();
+    let proto = m.clone();
+    let mut res = |q: &[f64]| {
+        work.set(q);
+        finite_res(res_raw(&work))
+    };
+    let mut jac = |p: &[f64], r: &[f64], h: &[f64]| -> Vec<Vec<f64>> {
+        std::thread::scope(|sc| {
+            let hs: Vec<_> = (0..p.len())
+                .map(|k| {
+                    let mut mk = proto.clone();
+                    let mut q = p.to_vec();
+                    q[k] += h[k];
+                    sc.spawn(move || {
+                        mk.set(&q);
+                        let rq = finite_res(res_raw(&mk));
+                        (0..r.len()).map(|i| (rq[i] - r[i]) / h[k]).collect::<Vec<f64>>()
+                    })
+                })
+                .collect();
+            hs.into_iter().map(|h| h.join().unwrap()).collect()
+        })
+    };
+    let out = crate::lm::lm(&cfg, &p0, &mut res, Some(&mut jac));
+    m.set(&out.p);
+    out.cost
 }
 
 /// models.txt 읽기.
@@ -480,70 +533,110 @@ pub trait Flight3 {
     fn obs3(&self, mph: f64, deg: f64, rpm: f64, axis_deg: f64) -> [f64; 2];
 }
 
-impl Model {
-    #[inline]
-    fn f3(&self, vars: &mut [f64], s: &[f64; 7], oy: f64, oz: f64) -> [f64; 7] {
-        let sp = (s[3] * s[3] + s[4] * s[4] + s[5] * s[5]).sqrt();
-        vars[0] = sp;
-        vars[1] = s[6];
-        vars[2] = s[6] / sp;
-        vars[3] = sp * RE_PER_U;
-        let (kd, kl) = (self.kd.eval(vars), self.kl.eval(vars));
-        let beta = self.beta_idx.map(|i| vars[4 + i]).unwrap_or(0.06);
-        let g = 1.0 / sp.sqrt();
-        let (cx, cy, cz) = (oy * s[5] - oz * s[4], oz * s[3], -oy * s[3]);
-        [s[3] * g, s[4] * g, s[5] * g, (-kd * s[3] + kl * cx) * g, (-kd * s[4] + kl * cy - 1.0) * g, (-kd * s[5] + kl * cz) * g, -beta * s[6] * sp * g]
-    }
+/// 3차원 비행 한 걸음의 도함수 (τ 재매개: dτ = |u|^(1/2) dt). kk(|u|, w) → (|u| C_D, |u| C_L)
+#[inline]
+fn f3_with(kk: &mut dyn FnMut(f64, f64) -> (f64, f64), beta: f64, s: &[f64; 7], oy: f64, oz: f64) -> [f64; 7] {
+    let sp = (s[3] * s[3] + s[4] * s[4] + s[5] * s[5]).sqrt();
+    let (kd, kl) = kk(sp, s[6]);
+    let g = 1.0 / sp.sqrt();
+    let (cx, cy, cz) = (oy * s[5] - oz * s[4], oz * s[3], -oy * s[3]);
+    [s[3] * g, s[4] * g, s[5] * g, (-kd * s[3] + kl * cx) * g, (-kd * s[4] + kl * cy - 1.0) * g, (-kd * s[5] + kl * cz) * g, -beta * s[6] * sp * g]
 }
 
 impl Flight3 for Model {
     fn obs3(&self, mph: f64, deg: f64, rpm: f64, axis_deg: f64) -> [f64; 2] {
-        let [v0, th, s0] = dimless(mph, deg, rpm);
-        let (oy, oz) = (axis_deg.to_radians().sin(), axis_deg.to_radians().cos());
-        let mut vars = vec![0.0; 4 + self.p.len()];
-        vars[4..].copy_from_slice(&self.p);
-        let h = self.h;
-        let mut s = [0.0, 0.0, 0.0, v0 * th.cos(), v0 * th.sin(), 0.0, s0 * v0];
-        let mut k1 = self.f3(&mut vars, &s, oy, oz);
-        let mut apex = 0.0f64;
-        for _ in 0..(12.0 / h) as usize {
-            let st = |k: &[f64; 7], c: f64| -> [f64; 7] { std::array::from_fn(|i| s[i] + c * k[i]) };
-            let k2 = self.f3(&mut vars, &st(&k1, 0.5 * h), oy, oz);
-            let k3 = self.f3(&mut vars, &st(&k2, 0.5 * h), oy, oz);
-            let k4 = self.f3(&mut vars, &st(&k3, h), oy, oz);
-            let n: [f64; 7] = std::array::from_fn(|i| s[i] + h / 6.0 * (k1[i] + 2.0 * k2[i] + 2.0 * k3[i] + k4[i]));
-            let kn = self.f3(&mut vars, &n, oy, oz);
-            let (y0, y1, m0, m1) = (s[1], n[1], k1[1] * h, kn[1] * h);
-            if k1[1] > 0.0 && kn[1] <= 0.0 {
-                let a = 6.0 * y0 + 3.0 * m0 - 6.0 * y1 + 3.0 * m1;
-                let b = -6.0 * y0 - 4.0 * m0 + 6.0 * y1 - 2.0 * m1;
-                let t = if a.abs() < 1e-14 { -m0 / b } else {
-                    let d = (b * b - 4.0 * a * m0).max(0.0).sqrt();
-                    let (r1, r2) = ((-b - d) / (2.0 * a), (-b + d) / (2.0 * a));
-                    if (0.0..=1.0).contains(&r1) { r1 } else { r2 }
-                }
-                .clamp(0.0, 1.0);
-                let hh = herm(t);
-                apex = apex.max(hh[0] * y0 + hh[1] * m0 + hh[2] * y1 + hh[3] * m1);
-            }
-            if n[1] < 0.0 && s[1] >= 0.0 {
-                let mut t = if y0 <= 0.0 { 1.0 } else { y0 / (y0 - y1) };
-                for _ in 0..4 {
-                    let hh = herm(t);
-                    let f = hh[0] * y0 + hh[1] * m0 + hh[2] * y1 + hh[3] * m1;
-                    let t2 = t * t;
-                    let df = (6.0 * t2 - 6.0 * t) * (y0 - y1) + (3.0 * t2 - 4.0 * t + 1.0) * m0 + (3.0 * t2 - 2.0 * t) * m1;
-                    t = (t - f / df).clamp(0.0, 1.0);
-                }
-                let hh = herm(t);
-                let x = hh[0] * s[0] + hh[1] * k1[0] * h + hh[2] * n[0] + hh[3] * kn[0] * h;
-                return [x * YD, apex * YD];
-            }
-            s = n;
-            k1 = kn;
-        }
-        [f64::NAN; 2]
+        let r = self.fly3(mph, deg, rpm, axis_deg);
+        [r[0], r[2]]
     }
+}
+
+impl Model {
+    /// 3차원 비행의 착지: [앞쪽 거리 yd (처음 수평 방향), 옆 편차 yd (오른쪽 +), 최고 높이 yd, 착지각 deg (내려가는 쪽 +),
+    /// 착지 속력 mph, 비행 시간 s, 최고점까지 앞쪽 거리 yd].
+    /// 축 기울기 a > 0 이면 왼쪽으로 휜다 (z 가속 = -sin a · ux · kl).
+    pub fn fly3(&self, mph: f64, deg: f64, rpm: f64, axis_deg: f64) -> [f64; 7] {
+        self.with_vars(|vars| {
+            let beta = self.beta_idx.map(|i| vars[4 + i]).unwrap_or(0.06);
+            let mut kk = |sp: f64, w: f64| {
+                vars[0] = sp;
+                vars[1] = w;
+                vars[2] = w / sp;
+                vars[3] = sp * RE_PER_U;
+                (self.kd.eval(vars), self.kl.eval(vars))
+            };
+            fly3_with(&mut kk, beta, self.h, mph, deg, rpm, axis_deg)
+        })
+    }
+}
+
+/// 장 함수 kk(|u|, w) 와 스핀 감쇠 beta 로 날린 3차원 비행. 반환은 `Model::fly3` 와 같다.
+/// h = τ 걸음 (무차원). 장은 식 해석기든 곡면 표든 상관없다.
+pub fn fly3_with(kk: &mut dyn FnMut(f64, f64) -> (f64, f64), beta: f64, h: f64, mph: f64, deg: f64, rpm: f64, axis_deg: f64) -> [f64; 7] {
+    let [v0, th, s0] = dimless(mph, deg, rpm);
+    let (oy, oz) = (axis_deg.to_radians().sin(), axis_deg.to_radians().cos());
+    let mut s = [0.0, 0.0, 0.0, v0 * th.cos(), v0 * th.sin(), 0.0, s0 * v0];
+    let mut k1 = f3_with(kk, beta, &s, oy, oz);
+    let mut apex = 0.0f64;
+    let mut apex_x = 0.0f64;
+    let mut time = 0.0f64; // dt = dτ / sqrt|u| 를 단계마다 심프슨으로 쌓는다 (무차원)
+    let gi = |s: &[f64; 7]| 1.0 / (s[3] * s[3] + s[4] * s[4] + s[5] * s[5]).sqrt().sqrt();
+    for _ in 0..(12.0 / h) as usize {
+        let st = |k: &[f64; 7], c: f64| -> [f64; 7] { std::array::from_fn(|i| s[i] + c * k[i]) };
+        let s2 = st(&k1, 0.5 * h);
+        let k2 = f3_with(kk, beta, &s2, oy, oz);
+        let s3 = st(&k2, 0.5 * h);
+        let k3 = f3_with(kk, beta, &s3, oy, oz);
+        let s4 = st(&k3, h);
+        let k4 = f3_with(kk, beta, &s4, oy, oz);
+        let n: [f64; 7] = std::array::from_fn(|i| s[i] + h / 6.0 * (k1[i] + 2.0 * k2[i] + 2.0 * k3[i] + k4[i]));
+        let kn = f3_with(kk, beta, &n, oy, oz);
+        let dt = h / 6.0 * (gi(&s) + 2.0 * gi(&s2) + 2.0 * gi(&s3) + gi(&s4));
+        let (y0, y1, m0, m1) = (s[1], n[1], k1[1] * h, kn[1] * h);
+        if k1[1] > 0.0 && kn[1] <= 0.0 {
+            let a = 6.0 * y0 + 3.0 * m0 - 6.0 * y1 + 3.0 * m1;
+            let b = -6.0 * y0 - 4.0 * m0 + 6.0 * y1 - 2.0 * m1;
+            let t = if a.abs() < 1e-14 { -m0 / b } else {
+                let d = (b * b - 4.0 * a * m0).max(0.0).sqrt();
+                let (r1, r2) = ((-b - d) / (2.0 * a), (-b + d) / (2.0 * a));
+                if (0.0..=1.0).contains(&r1) { r1 } else { r2 }
+            }
+            .clamp(0.0, 1.0);
+            let hh = herm(t);
+            let ya = hh[0] * y0 + hh[1] * m0 + hh[2] * y1 + hh[3] * m1;
+            if ya > apex {
+                apex = ya;
+                apex_x = hh[0] * s[0] + hh[1] * k1[0] * h + hh[2] * n[0] + hh[3] * kn[0] * h;
+            }
+        }
+        if n[1] < 0.0 && s[1] >= 0.0 {
+            let mut t = if y0 <= 0.0 { 1.0 } else { y0 / (y0 - y1) };
+            for _ in 0..4 {
+                let hh = herm(t);
+                let f = hh[0] * y0 + hh[1] * m0 + hh[2] * y1 + hh[3] * m1;
+                let t2 = t * t;
+                let df = (6.0 * t2 - 6.0 * t) * (y0 - y1) + (3.0 * t2 - 4.0 * t + 1.0) * m0 + (3.0 * t2 - 2.0 * t) * m1;
+                t = (t - f / df).clamp(0.0, 1.0);
+            }
+            let hh = herm(t);
+            let at = |i: usize, j: usize| hh[0] * s[i] + hh[1] * k1[j] * h + hh[2] * n[i] + hh[3] * kn[j] * h;
+            let (x, z) = (at(0, 0), at(2, 2));
+            let (vx, vy, vz) = (at(3, 3), at(4, 4), at(5, 5));
+            let t_s = (time + t * dt) * crate::engine::L_M / crate::engine::U_MS; // 걸음 안은 선형으로
+            return [
+                x * YD,
+                z * YD,
+                apex * YD,
+                (-vy).atan2(vx).to_degrees(),
+                (vx * vx + vy * vy + vz * vz).sqrt() * crate::engine::U_MS / crate::engine::MPH,
+                t_s,
+                apex_x * YD,
+            ];
+        }
+        time += dt;
+        s = n;
+        k1 = kn;
+    }
+    [f64::NAN; 7]
 }
 
 /// FlightScope 계산값 175샷: (mph, 발사각, 총 스핀, 스핀축, 캐리 yd, 최고 높이 ft)
@@ -570,7 +663,8 @@ pub fn score_fs<F: Flight3 + ?Sized>(m: &F, fs: &[[f64; 6]]) -> [f64; 6] {
     [rmse(&ec), bin(0.0, 80.0), bin(80.0, 110.0), bin(110.0, 1e9), rmse(&ea), ec.iter().sum::<f64>() / ec.len() as f64]
 }
 
-/// 한 행 빼기 교차검증: 행 하나를 빼고 맞춘 뒤 그 행을 예측한다 (전체 맞춤값에서 시작).
+/// 한 행 빼기 교차검증: 행 하나를 빼고 맞춘 뒤 그 행을 예측한다. 접마다 시작값(`Model::reset`)에서 출발한다
+/// (전체 맞춤값에서 출발하면 뺀 행의 정보가 시작점으로 새어 든다).
 /// 반환 [캐리, 높이, 착지 RMSE, 세 양 합친 RMSE]. 판정 자료를 보지 않고 꼴을 고르는 기준.
 pub fn loo_cv(m: &Model, rows: &[[f64; 6]], w: [f64; 3], threads: usize) -> [f64; 4] {
     let n = rows.len();
@@ -587,6 +681,7 @@ pub fn loo_cv(m: &Model, rows: &[[f64; 6]], w: [f64; 3], threads: usize) -> [f64
                         .map(|&i| {
                             let tr: Vec<[f64; 6]> = rows.iter().enumerate().filter(|(j, _)| *j != i).map(|(_, r)| *r).collect();
                             let mut mi = m.clone();
+                            mi.reset(); // 시작값에서 훈련 행만으로 (전체 맞춤값에서 출발하면 뺀 행이 시작점에 스며든다)
                             fit(&mut mi, &tr, w);
                             let r = rows[i];
                             let o = mi.obs(r[0], r[1], r[2]);

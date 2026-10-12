@@ -12,7 +12,7 @@
 //!   --final: 모든 자료로 맞춘 매개변수만 (제품용)
 
 use flightbench::engine::{USGA, YD};
-use flightbench::harness::{gh, lm, load_fs, load_models, Flight, Flight3, Model, Tunable, LPGA11, PGA12, RE_PER_U};
+use flightbench::harness::{gh_cached, lm, load_fs, load_models, Flight, Flight3, Model, Tunable, LPGA11, PGA12, RE_PER_U};
 use flightbench::openfairway::OpenFairway;
 use std::time::Instant;
 
@@ -68,7 +68,7 @@ impl Predict for OpenFairway {
 
 /// USGA 한 행의 분포 평균 캐리 (가우스-에르미트 n0×n1×n2, 20 mph·0.5°·200 rpm 에서 자름)
 fn usga_row<F: Flight + ?Sized>(m: &F, row: usize, n: [usize; 3]) -> f64 {
-    let (g0, g1, g2) = (gh(n[0]), gh(n[1]), gh(n[2]));
+    let (g0, g1, g2) = (gh_cached(n[0]), gh_cached(n[1]), gh_cached(n[2]));
     let (_, mv, sv, md, sd, ms, ss, _) = USGA[row];
     let mut acc = 0.0;
     for i in 0..n[0] {

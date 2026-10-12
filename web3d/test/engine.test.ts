@@ -6,7 +6,7 @@ import { readFileSync } from 'node:fs';
 
 import { describe, expect, it } from 'vitest';
 
-import { positionAt, resample, simulate } from '../src/engine/flight.ts';
+import { gustVector, positionAt, resample, simulate } from '../src/engine/flight.ts';
 import { createSharedRe, MODEL } from '../src/engine/model.ts';
 
 interface Ref {
@@ -114,5 +114,50 @@ describe('비행 엔진 대 web_refs.csv', () => {
     const n12pow = simulate(slow, { model: createSharedRe({ n: 12.000000001 }), samples: false }).carryYd;
     expect(Math.abs(n4 - base)).toBeGreaterThan(0.1);
     expect(Math.abs(n12pow - base)).toBeLessThan(1e-4);
+  });
+});
+
+describe('돌풍 (게임용: 평균 바람 위에 시간에 따라 변하는 항)', () => {
+  const shot = { mph: 120, launchDeg: 16.3, rpm: 7097, axisDeg: 0 };
+  const wind = { x: -3, z: 2 };
+
+  it('진폭 0 이거나 없으면 바람만 쓴 계산과 비트까지 같다 (기본값 = 돌풍 없음, 참값 대조는 그대로)', () => {
+    const base = simulate(shot, { wind });
+    const zero = simulate(shot, { wind, gust: { amp: 0, seed: 7 } });
+    expect(zero.carryYd).toBe(base.carryYd);
+    expect(zero.lateralYd).toBe(base.lateralYd);
+    expect(zero.timeS).toBe(base.timeS);
+    expect(zero.samples.length).toBe(base.samples.length);
+  });
+
+  it('진폭이 있으면 결과가 달라지고, 같은 씨앗이면 같고 다른 씨앗이면 다르다 (결정적)', () => {
+    const base = simulate(shot, { wind });
+    const a = simulate(shot, { wind, gust: { amp: 3, seed: 5 } });
+    const a2 = simulate(shot, { wind, gust: { amp: 3, seed: 5 } });
+    const b = simulate(shot, { wind, gust: { amp: 3, seed: 6 } });
+    expect(a2.carryYd).toBe(a.carryYd);
+    expect(a2.lateralYd).toBe(a.lateralYd);
+    expect(Math.hypot(a.carryYd - base.carryYd, a.lateralYd - base.lateralYd)).toBeGreaterThan(0.2);
+    expect(Math.hypot(a.carryYd - b.carryYd, a.lateralYd - b.lateralYd)).toBeGreaterThan(0.1);
+    // 돌풍이 커져도 수 yd 안: 평균 바람 효과 (수 yd) 위에 얹힌 흔들림이다
+    expect(Math.hypot(a.carryYd - base.carryYd, a.lateralYd - base.lateralYd)).toBeLessThan(15);
+  });
+
+  it('돌풍 벡터는 진폭 안, 평균 바람 방향이 주된 축이다', () => {
+    let maxAlong = 0;
+    for (let t = 0; t < 8; t += 0.05) {
+      const g = gustVector({ amp: 2, seed: 9 }, wind, t);
+      expect(Math.hypot(g.x, g.z)).toBeLessThanOrEqual(2 * Math.sqrt(1 + 0.16) + 1e-9);
+      const w = Math.hypot(wind.x, wind.z);
+      maxAlong = Math.max(maxAlong, Math.abs((g.x * wind.x + g.z * wind.z) / w));
+    }
+    expect(maxAlong).toBeGreaterThan(1.2);
+    expect(gustVector({ amp: 0, seed: 1 }, wind, 1)).toEqual({ x: 0, z: 0 });
+  });
+
+  it('무풍에서도 돌풍은 +x 축을 주 방향으로 분다', () => {
+    const calm = simulate(shot, { gust: { amp: 3, seed: 2 } });
+    const none = simulate(shot);
+    expect(Math.abs(calm.carryYd - none.carryYd) + Math.abs(calm.lateralYd - none.lateralYd)).toBeGreaterThan(0.05);
   });
 });

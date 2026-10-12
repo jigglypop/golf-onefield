@@ -21,6 +21,7 @@
   - 영상 도구는 opencv 가 필요하다(시스템 python3 에 없음): 가상환경을 만들어 PATH 앞에 둔다
 - 3D 골프 게임: `cd web3d && npm run dev` (r3f + gaesup-world, 메뉴 → 스트로크 9홀 1–4명·니어핀·롱드라이브, `?mode=range` 연습장). 비행 엔진은 `web3d/src/engine/`(러스트 장과 같은 식, `npm test` 로 참값 대조),
   게임은 `web3d/src/game/`(course·clubs·ground·round·sound, scene/, ui/). 지면 물리는 검증 안 된 게임용 모형이다. 바꾼 뒤 `npm test` 와 `npm run build && npm run smoke`
+  시각은 `web3d/src/photo/`(지형·숲·호수·기물·잔디 질감·구름). 플레이 구역은 평지(y = 0)여야 한다(공 물리). 장면을 바꾼 뒤 `node scripts/shots.mjs --pass gpu|perf` 로 찍어 눈으로 확인하고(`--pass perf` 는 프레임 한도 해제), 물리 성능은 `node scripts/perf.mjs`
 
 ## 규칙
 - 판정은 숫자로: 보정은 훈련 자료로만, 보류 자료(LPGA·USGA·FS)로 고른 경우 그 사실을 기록한다. 시험한 꼴은 `models_tried.txt`/`models_search.txt` 에 남긴다.

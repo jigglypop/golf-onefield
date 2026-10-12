@@ -1,7 +1,10 @@
 /**
- * 게임 HUD (DOM): 시작 메뉴, 홀 소개, 홀·타수, 사람별 점수, 핀까지·라이·바람, 클럽 줄, 스윙 미터, 샷 판정, 알림,
- * 실측 샷 넣기, 스코어카드·챌린지 순위. 스윙 미터·소개 시간은 requestAnimationFrame 고리에서 넘긴다.
- * 효과음은 상태가 바뀌는 순간(스윙·착지·홀컵·박수)에 낸다.
+ * 게임 HUD (DOM): 시작 메뉴(사람·봇·핸디캡), 홀 소개, 홀·타수, 사람별 점수, 핀까지·라이·바람·직전 샷, 클럽 줄, 스윙 미터, 샷 판정, 알림,
+ * 실측 샷 넣기, 스코어카드(순타수 포함)·챌린지 순위, 화면 버튼(TouchControls). 스윙 미터는 requestAnimationFrame 고리에서 넘긴다.
+ * 홀 소개 시간은 rAF 고리에서도 보지만 배경 탭에서 rAF 가 멈춰도 round.ts 의 타이머가 넘긴다 (performance.now 기준).
+ * 효과음은 상태가 바뀌는 순간(스윙·착지·바운드·굴림·홀컵·박수)에 낸다: 타구음은 임팩트 시각에 맞춰 오디오 시계로 예약한다.
+ * 봇 차례는 useBotDriver 가 잠깐 생각한 뒤 친다.
+ * 구독은 필요한 칸만 고른다(useGame 에 통째로 넘기지 않는다): 미터·바람·메시지가 바뀔 때마다 모든 카드가 다시 그려지지 않게.
  */
 import { useEffect, useRef, useState } from 'react';
 
@@ -9,16 +12,22 @@ import { parseScreenOutput } from '../../engine/parse.ts';
 import { M_PER_YD } from '../../engine/units.ts';
 import { CLUBS, fullCarryYd, PUTTER } from '../clubs.ts';
 import { HOLES, holeLengthM, SURFACE_LABEL } from '../course.ts';
-import { puttMaxFor } from '../ground.ts';
+import { puttMaxFor, rollProfile } from '../ground.ts';
 import {
   ACC_SPAN,
+  BOT_LEVEL_LABEL,
+  botTurn,
   CHALLENGE_TRIES,
+  clubAllowed,
   distToPinM,
   game,
+  handicapAllowance,
   holeOf,
   INTRO_S,
   introTick,
+  isBotTurn,
   loadRecords,
+  loadRounds,
   MAX_LATE,
   MAX_POWER,
   meterMarker,
@@ -29,27 +38,29 @@ import {
   pressSwing,
   scoreName,
   setClub,
+  shotCarryYd,
   startGame,
   swing,
   toggleOverview,
   useGame,
+  type BotLevel,
   type GameMode,
-  type GameState,
   type PlayerSlot,
+  type PlayerSpec,
 } from '../round.ts';
-import { ensureAudio, isMuted, playApplause, playClick, playCup, playLand, playPutt, playSwing, setMuted } from '../sound.ts';
+import { cancelScheduled, ensureAudio, isMuted, playApplause, playBounce, playClick, playCup, playLand, playPutt, playRoll, playSplash, playSwing, playTree, setMuted, setWindAmbient } from '../sound.ts';
 import { MiniMap } from './MiniMap.tsx';
+import { TouchControls } from './TouchControls.tsx';
 import './game.css';
 
-const parOf = (s: GameState, pos: number) => HOLES[s.course[pos]!]!.par;
-
-function toPar(scores: (number | null)[], s: GameState): string {
+/** 코스 순서(course)와 점수(scores)로 파 대비 합 ('E', '+3', '-2') */
+function toPar(scores: (number | null)[], course: number[]): string {
   let strokes = 0;
   let par = 0;
   scores.forEach((v, i) => {
     if (v !== null) {
       strokes += v;
-      par += parOf(s, i);
+      par += HOLES[course[i]!]!.par;
     }
   });
   const d = strokes - par;
@@ -63,19 +74,37 @@ const bestShot = (p: PlayerSlot, mode: GameMode) => {
   return mode === 'ctp' ? Math.min(...v) : Math.max(...v);
 };
 const fmtShot = (v: number, mode: GameMode) => (Number.isNaN(v) ? '—' : mode === 'ctp' ? `${v.toFixed(2)} m` : `${(v / M_PER_YD).toFixed(1)} yd`);
+const fmtSigned = (d: number) => (d === 0 ? 'E' : d > 0 ? `+${d}` : `${d}`);
 
 // ------------------------------------------------------------------ 메뉴
+
+interface Row {
+  name: string;
+  bot: boolean;
+  level: BotLevel;
+  handicap: number;
+}
+
+const DEFAULT_ROWS: Row[] = [0, 1, 2, 3].map((i) => ({ name: `플레이어 ${i + 1}`, bot: false, level: 'normal', handicap: 0 }));
+const PLAYER_COLOR_HEX = ['#ffd23f', '#ff6a8a', '#5ec8ff', '#9be37a'];
 
 function Menu({ onRange }: { onRange: () => void }) {
   const [mode, setMode] = useState<GameMode>('stroke');
   const [holes, setHoles] = useState(9);
-  const [names, setNames] = useState(['플레이어 1', '플레이어 2', '플레이어 3', '플레이어 4']);
+  const [rows, setRows] = useState<Row[]>(DEFAULT_ROWS);
   const [count, setCount] = useState(1);
   const rec = loadRecords();
+  const last = loadRounds().slice(-1)[0];
+  const patch = (i: number, p: Partial<Row>) => setRows((r) => r.map((x, j) => (j === i ? { ...x, ...p } : x)));
   const start = () => {
     ensureAudio();
     playClick();
-    startGame({ mode, holes, players: names.slice(0, count).map((n, i) => n.trim() || `플레이어 ${i + 1}`), intro: true });
+    const players: PlayerSpec[] = rows.slice(0, count).map((r, i) => ({
+      name: r.name.trim() || (r.bot ? `봇 ${i + 1}` : `플레이어 ${i + 1}`),
+      ...(r.bot ? { bot: true, level: r.level } : {}),
+      ...(r.handicap > 0 ? { handicap: r.handicap } : {}),
+    }));
+    startGame({ mode, holes, players, intro: true });
   };
   const modes: [GameMode, string, string][] = [
     ['stroke', '스트로크 플레이', '9홀(또는 3홀)을 돌며 타수를 겨룬다. 여럿이면 먼 사람부터'],
@@ -119,26 +148,64 @@ function Menu({ onRange }: { onRange: () => void }) {
             </button>
           ))}
         </div>
-        <div className="g-menu-names">
-          {names.slice(0, count).map((n, i) => (
-            <input
-              key={i}
-              aria-label={`플레이어 ${i + 1} 이름`}
-              value={n}
-              maxLength={10}
-              onChange={(e) => setNames(names.map((x, j) => (j === i ? e.target.value : x)))}
-              style={{ borderColor: ['#ffd23f', '#ff6a8a', '#5ec8ff', '#9be37a'][i] }}
-            />
+        <div className="g-menu-players" data-testid="g-menu-players">
+          {rows.slice(0, count).map((r, i) => (
+            <div key={i} className="g-menu-player">
+              <input
+                aria-label={`플레이어 ${i + 1} 이름`}
+                value={r.name}
+                maxLength={10}
+                onChange={(e) => patch(i, { name: e.target.value })}
+                style={{ borderColor: PLAYER_COLOR_HEX[i] }}
+              />
+              <button
+                type="button"
+                className={`g-pill g-bot-toggle${r.bot ? ' on' : ''}`}
+                aria-pressed={r.bot}
+                aria-label={`플레이어 ${i + 1} 봇`}
+                onClick={() => patch(i, { bot: !r.bot, name: /^(플레이어|봇) \d$/.test(r.name) ? `${r.bot ? '플레이어' : '봇'} ${i + 1}` : r.name })}
+              >
+                봇
+              </button>
+              {r.bot && (
+                <select aria-label={`봇 ${i + 1} 난이도`} value={r.level} onChange={(e) => patch(i, { level: e.target.value as BotLevel })}>
+                  {(Object.keys(BOT_LEVEL_LABEL) as BotLevel[]).map((l) => (
+                    <option key={l} value={l}>
+                      {BOT_LEVEL_LABEL[l]}
+                    </option>
+                  ))}
+                </select>
+              )}
+              {mode === 'stroke' && (
+                <label className="g-hc">
+                  핸디
+                  <input
+                    type="number"
+                    inputMode="numeric"
+                    min={0}
+                    max={54}
+                    aria-label={`플레이어 ${i + 1} 핸디캡`}
+                    value={r.handicap}
+                    onChange={(e) => patch(i, { handicap: Math.min(Math.max(Math.round(Number(e.target.value) || 0), 0), 54) })}
+                  />
+                </label>
+              )}
+            </div>
           ))}
         </div>
         <button type="button" className="g-start" onClick={start} data-testid="g-start">
           시작
         </button>
         <div className="g-menu-records">
-          기록 · 3홀 {rec.stroke3 === undefined ? '—' : rec.stroke3 > 0 ? `+${rec.stroke3}` : rec.stroke3 === 0 ? 'E' : rec.stroke3} · 9홀{' '}
-          {rec.stroke9 === undefined ? '—' : rec.stroke9 > 0 ? `+${rec.stroke9}` : rec.stroke9 === 0 ? 'E' : rec.stroke9} · 니어핀{' '}
+          기록 · 3홀 {rec.stroke3 === undefined ? '—' : fmtSigned(rec.stroke3)} · 9홀 {rec.stroke9 === undefined ? '—' : fmtSigned(rec.stroke9)} · 니어핀{' '}
           {rec.ctp === undefined ? '—' : `${rec.ctp.toFixed(2)} m`} · 롱드라이브 {rec.longdrive === undefined ? '—' : `${rec.longdrive.toFixed(1)} yd`}
         </div>
+        {last && (
+          <div className="g-menu-records" data-testid="g-menu-last">
+            지난 라운드 · {new Date(last.when).toLocaleDateString('ko-KR')} ·{' '}
+            {last.players.map((p) => (last.mode === 'stroke' ? `${p.name} ${p.gross}${p.handicap > 0 ? ` (순 ${p.net})` : ''}` : p.name)).join(' / ')}
+          </div>
+        )}
       </div>
     </div>
   );
@@ -170,40 +237,43 @@ function IntroCard() {
 // ------------------------------------------------------------------ 위 카드
 
 function HoleCard() {
-  const s = useGame((x) => x);
-  const h = holeOf(s);
-  const p = s.players[s.cur]!;
-  const multi = s.players.length > 1;
+  const mode = useGame((s) => s.mode);
+  const h = useGame(holeOf);
+  const holePos = useGame((s) => s.holePos);
+  const course = useGame((s) => s.course);
+  const multi = useGame((s) => s.players.length > 1);
+  const p = useGame((s) => s.players[s.cur]!);
+  const strokes = useGame((s) => s.strokes);
+  const scores = useGame((s) => s.scores);
+  const tries = useGame((s) => Math.min(Math.floor(s.attempt / s.players.length) + 1, CHALLENGE_TRIES));
+  const who = multi && (
+    <b className="g-who" style={{ color: p.color }}>
+      {p.isBot ? '🤖 ' : ''}
+      {p.name}{' '}
+    </b>
+  );
   return (
     <div className="panel g-hole" data-testid="g-hole">
       <div className="g-hole-no">
-        {s.mode === 'stroke' ? h.number : s.mode === 'ctp' ? 'CTP' : 'LD'}
-        {s.mode === 'stroke' && <span>번 홀</span>}
+        {mode === 'stroke' ? h.number : mode === 'ctp' ? 'CTP' : 'LD'}
+        {mode === 'stroke' && <span>번 홀</span>}
       </div>
       <div>
-        <div className="g-hole-name">{s.mode === 'stroke' ? h.name : s.mode === 'ctp' ? `니어핀 · ${h.name}` : '롱드라이브 그리드'}</div>
-        {s.mode === 'stroke' ? (
+        <div className="g-hole-name">{mode === 'stroke' ? h.name : mode === 'ctp' ? `니어핀 · ${h.name}` : '롱드라이브 그리드'}</div>
+        {mode === 'stroke' ? (
           <>
             <div className="g-hole-meta">
-              파 {h.par} · {Math.round(holeLengthM(h) / M_PER_YD)} yd · {s.holePos + 1}/{s.course.length}
+              파 {h.par} · {Math.round(holeLengthM(h) / M_PER_YD)} yd · {holePos + 1}/{course.length}
             </div>
             <div className="g-hole-meta">
-              {multi && (
-                <b className="g-who" style={{ color: p.color }}>
-                  {p.name}{' '}
-                </b>
-              )}
-              타수 <b data-testid="g-strokes">{s.strokes}</b> · 합계 <b>{toPar(s.scores, s)}</b>
+              {who}
+              타수 <b data-testid="g-strokes">{strokes}</b> · 합계 <b>{toPar(scores, course)}</b>
             </div>
           </>
         ) : (
           <div className="g-hole-meta">
-            {multi && (
-              <b className="g-who" style={{ color: p.color }}>
-                {p.name}{' '}
-              </b>
-            )}
-            {Math.min(Math.floor(s.attempt / s.players.length) + 1, CHALLENGE_TRIES)}/{CHALLENGE_TRIES}번째 · 최고 <b>{fmtShot(bestShot(p, s.mode), s.mode)}</b>
+            {who}
+            {tries}/{CHALLENGE_TRIES}번째 · 최고 <b>{fmtShot(bestShot(p, mode), mode)}</b>
           </div>
         )}
       </div>
@@ -212,24 +282,31 @@ function HoleCard() {
 }
 
 function PlayersPanel() {
-  const s = useGame((x) => x);
-  if (s.players.length < 2 && s.mode === 'stroke') return null;
-  const players = s.players.map((p, i) => (i === s.cur ? { ...p, ball: s.ball, strokes: s.strokes, scores: s.scores } : p));
-  const h = holeOf(s);
+  const mode = useGame((s) => s.mode);
+  const h = useGame(holeOf);
+  const course = useGame((s) => s.course);
+  const slots = useGame((s) => s.players);
+  const cur = useGame((s) => s.cur);
+  const ball = useGame((s) => s.ball);
+  const strokes = useGame((s) => s.strokes);
+  const scores = useGame((s) => s.scores);
+  if (slots.length < 2 && mode === 'stroke') return null;
+  const players = slots.map((p, i) => (i === cur ? { ...p, ball, strokes, scores } : p));
   return (
     <div className="panel g-players" data-testid="g-players">
       {players.map((p, i) => (
-        <div key={i} className={`g-player${i === s.cur ? ' on' : ''}`}>
+        <div key={i} className={`g-player${i === cur ? ' on' : ''}`}>
           <i style={{ background: p.color }} />
-          <span className="g-player-name">{p.name}</span>
-          {s.mode === 'stroke' ? (
+          <span className="g-player-name">
+            {p.isBot ? '🤖 ' : ''}
+            {p.name}
+          </span>
+          {mode === 'stroke' ? (
             <span className="g-player-val">
-              {p.done ? '홀아웃' : p.strokes === 0 ? '티' : `${p.strokes}타 · ${Math.round(Math.hypot(h.pin[0] - p.ball.x, h.pin[1] - p.ball.z) / M_PER_YD)} yd`} · {toPar(p.scores, s)}
+              {p.done ? '홀아웃' : p.strokes === 0 ? '티' : `${p.strokes}타 · ${Math.round(Math.hypot(h.pin[0] - p.ball.x, h.pin[1] - p.ball.z) / M_PER_YD)} yd`} · {toPar(p.scores, course)}
             </span>
           ) : (
-            <span className="g-player-val">
-              {p.shots.map((v) => fmtShot(v, s.mode)).join(' · ') || '—'}
-            </span>
+            <span className="g-player-val">{p.shots.map((v) => fmtShot(v, mode)).join(' · ') || '—'}</span>
           )}
         </div>
       ))}
@@ -246,6 +323,51 @@ function windText(rel: number, speed: number): string {
   if (cross > 0.6) parts.push('오른쪽으로');
   else if (cross < -0.6) parts.push('왼쪽으로');
   return parts.length ? parts.join(' · ') : '거의 없음';
+}
+
+/** 직전 샷: 볼스피드·발사각·스핀·캐리 (퍼트는 굴린 거리) */
+function LastShot() {
+  const shot = useGame((s) => s.shot);
+  if (!shot) return null;
+  if (shot.putt) {
+    return (
+      <div className="g-last" data-testid="g-last">
+        <div className="g-row">
+          <span className="g-label">직전 퍼트</span>
+          <span>{shot.ground.runM.toFixed(1)} m</span>
+        </div>
+      </div>
+    );
+  }
+  const input = shot.input;
+  if (!input) return null;
+  const carry = shotCarryYd(shot);
+  return (
+    <div className="g-last" data-testid="g-last">
+      <div className="g-row">
+        <span className="g-label">직전 샷</span>
+        <span className="g-last-club">{shot.measured ? '실측' : CLUBS[shot.clubIdx]!.short}</span>
+      </div>
+      <div className="g-last-grid">
+        <span>
+          <small>발사각</small>
+          <b data-testid="g-last-launch">{`${input.launchDeg.toFixed(1)}°`}</b>
+        </span>
+        <span>
+          <small>스핀</small>
+          <b data-testid="g-last-spin">{`${Math.round(input.rpm)} rpm`}</b>
+        </span>
+        <span>
+          <small>볼스피드</small>
+          <b>{`${input.mph.toFixed(0)} mph`}</b>
+        </span>
+        <span>
+          <small>캐리</small>
+          <b data-testid="g-last-carry">{`${Math.round(carry)} yd`}</b>
+        </span>
+      </div>
+    </div>
+  );
 }
 
 function InfoCard() {
@@ -274,8 +396,10 @@ function InfoCard() {
             ↑
           </span>
           {wind.speed.toFixed(1)} m/s <small>{windText(rel, wind.speed)}</small>
+          {(wind.gust ?? 0) > 0.05 && <small> · 돌풍 ±{(wind.gust ?? 0).toFixed(1)}</small>}
         </span>
       </div>
+      <LastShot />
     </div>
   );
 }
@@ -327,12 +451,13 @@ function Rating() {
 function ClubBar() {
   const clubIdx = useGame((s) => s.clubIdx);
   const phase = useGame((s) => s.phase);
-  const surface = useGame((s) => s.ball.surface);
-  const longdrive = useGame((s) => s.mode === 'longdrive');
+  // 클럽마다 쓸 수 있는지를 한 문자열로 (원시값이라 바뀔 때만 다시 그린다)
+  const allowed = useGame((s) => CLUBS.map((_, i) => (clubAllowed(i, s) ? '1' : '0')).join(''));
+  const bot = useGame((s) => isBotTurn(s));
   return (
     <div className="g-clubs" role="radiogroup" aria-label="클럽">
       {CLUBS.map((c, i) => {
-        const off = phase !== 'aim' || (c.id === '1w' && surface !== 'tee') || (longdrive && i !== 0);
+        const off = phase !== 'aim' || bot || allowed[i] === '0';
         return (
           <button
             key={c.id}
@@ -362,6 +487,7 @@ function meterPct(v: number, putter: boolean): number {
 function SwingMeterView() {
   const putter = useGame((s) => CLUBS[s.clubIdx]!.putter === true);
   const phase = useGame((s) => s.phase);
+  const bot = useGame((s) => isBotTurn(s));
   const marker = useRef<HTMLDivElement>(null);
   const fill = useRef<HTMLDivElement>(null);
   const label = useRef<HTMLSpanElement>(null);
@@ -396,8 +522,9 @@ function SwingMeterView() {
   const zero = meterPct(0, putter);
   const full = meterPct(1, putter);
   const zone = putter ? 0 : meterPct(PERFECT, false) - zero;
-  const hint =
-    phase === 'swing'
+  const hint = bot
+    ? '봇이 칩니다'
+    : phase === 'swing'
       ? putter
         ? 'Space: 세기 정하기'
         : '한 번 더 Space: 파워 → 정확도 (가운데 흰 띠에서)'
@@ -425,7 +552,7 @@ function SwingMeterView() {
       <div className="g-meter-text">
         <span className="g-meter-value" ref={label} data-testid="g-meter-value" />
         <span className="g-meter-hint">{hint}</span>
-        <button type="button" className="g-swing" onClick={() => (ensureAudio(), pressSwing())} disabled={phase !== 'aim' && phase !== 'swing'}>
+        <button type="button" className="g-swing" onClick={() => (ensureAudio(), pressSwing())} disabled={(phase !== 'aim' && phase !== 'swing') || bot}>
           스윙
         </button>
       </div>
@@ -438,6 +565,7 @@ function MeasuredShot() {
   const [text, setText] = useState('');
   const [note, setNote] = useState<string | null>(null);
   const phase = useGame((s) => s.phase);
+  const bot = useGame((s) => isBotTurn(s));
   const shoot = () => {
     const p = parseScreenOutput(text);
     const v = p.values;
@@ -463,7 +591,7 @@ function MeasuredShot() {
             onChange={(e) => setText(e.target.value)}
             onKeyDown={(e) => e.stopPropagation()}
           />
-          <button type="button" className="g-small" onClick={shoot} disabled={phase !== 'aim'}>
+          <button type="button" className="g-small" onClick={shoot} disabled={phase !== 'aim' || bot}>
             이 값으로 치기
           </button>
           {note && <div className="g-note">{note}</div>}
@@ -473,9 +601,15 @@ function MeasuredShot() {
   );
 }
 
+/** 스코어카드: 홀·끝 단계에서만 그린다 (바깥은 phase 만 구독해 평소에는 다시 그리지 않는다) */
 function ScoreCard() {
+  const phase = useGame((s) => s.phase);
+  if (phase !== 'holed' && phase !== 'done') return null;
+  return <ScoreCardBody />;
+}
+
+function ScoreCardBody() {
   const s = useGame((x) => x);
-  if (s.phase !== 'holed' && s.phase !== 'done') return null;
   const done = s.phase === 'done';
   const players = s.players.map((p, i) => (i === s.cur ? { ...p, scores: s.scores } : p));
   if (s.mode !== 'stroke') {
@@ -513,6 +647,7 @@ function ScoreCard() {
   const sumPar = holes.reduce((a, h) => a + h.par, 0);
   const h = holeOf(s);
   const last = s.holePos === s.course.length - 1;
+  const hasHc = players.some((p) => (p.handicap ?? 0) > 0);
   return (
     <div className="panel g-card" data-testid="g-card">
       <h2>{done ? '라운드 끝' : `${h.number}번 홀 끝`}</h2>
@@ -525,6 +660,7 @@ function ScoreCard() {
                 <th key={x.number}>{x.number}</th>
               ))}
               <th>합계</th>
+              {hasHc && <th>순타수</th>}
             </tr>
           </thead>
           <tbody>
@@ -534,20 +670,34 @@ function ScoreCard() {
                 <td key={x.number}>{x.par}</td>
               ))}
               <td>{sumPar}</td>
+              {hasHc && <td />}
             </tr>
-            {players.map((p, pi) => (
-              <tr key={pi}>
-                <td style={{ color: p.color, fontWeight: 800 }}>{p.name}</td>
-                {p.scores.map((v, i) => (
-                  <td key={i} className={v === null ? '' : v < holes[i]!.par ? 'under' : v > holes[i]!.par ? 'over' : 'even'}>
-                    {v ?? '·'}
+            {players.map((p, pi) => {
+              const gross = total(p);
+              const net = gross - handicapAllowance(p.handicap ?? 0, s.course.length);
+              return (
+                <tr key={pi}>
+                  <td style={{ color: p.color, fontWeight: 800 }}>
+                    {p.isBot ? '🤖 ' : ''}
+                    {p.name}
+                    {(p.handicap ?? 0) > 0 && <small> H{p.handicap}</small>}
                   </td>
-                ))}
-                <td>
-                  {total(p)} <small>({toPar(p.scores, s)})</small>
-                </td>
-              </tr>
-            ))}
+                  {p.scores.map((v, i) => (
+                    <td key={i} className={v === null ? '' : v < holes[i]!.par ? 'under' : v > holes[i]!.par ? 'over' : 'even'}>
+                      {v ?? '·'}
+                    </td>
+                  ))}
+                  <td>
+                    {gross} <small>({toPar(p.scores, s.course)})</small>
+                  </td>
+                  {hasHc && (
+                    <td data-testid="g-net">
+                      {net} <small>({fmtSigned(net - sumPar)})</small>
+                    </td>
+                  )}
+                </tr>
+              );
+            })}
           </tbody>
         </table>
       </div>
@@ -575,19 +725,40 @@ function ScoreCard() {
   );
 }
 
-/** 상태가 바뀌는 순간 효과음 */
+/**
+ * 상태가 바뀌는 순간 효과음.
+ *   새 샷: 타구음을 임팩트 시각(shot.impactDelay)에 오디오 시계로 예약 (+ 나무에 맞는 소리). 앞 샷의 남은 예약 소리는 끊는다.
+ *   착지(flight → ground): 착지음 + 바운드 소리들 + 굴림 소리를 지면 표본의 시각에 예약. 빨리 감기로 넘어가도 이 전환이 한 번 거친다.
+ *   샷이 끝남: 예약 소리를 끊고 홀컵·박수·물 소리를 낸다.
+ */
 function useGameAudio() {
   useEffect(() => {
     let prev = game.get();
     const unsub = game.subscribe(() => {
       const s = game.get();
       const sh = s.shot;
+      // 배속이 있으면 같은 비율로 당긴다 (지금은 1)
+      const k = 1 / Math.max(s.timeScale, 0.1);
       if (sh && sh.id !== prev.shot?.id) {
-        if (sh.putt) playPutt();
-        else playSwing(sh.swing ? 1 - Math.min(Math.abs(sh.swing.accuracy), 1) : 0.8);
+        cancelScheduled();
+        const at = sh.impactDelay * k;
+        if (sh.putt) {
+          playPutt(at);
+          const prof = rollProfile(sh.ground);
+          if (prof.length > 0) playRoll(prof, sh.ground.surface, at + prof[0]!.t * k);
+        } else {
+          playSwing(sh.swing ? 1 - Math.min(Math.abs(sh.swing.accuracy), 1) : 0.8, at);
+          if (sh.tree) playTree((sh.impactDelay + sh.tree.t) * k);
+        }
       }
-      if (sh && prev.phase === 'flight' && s.phase === 'ground') playLand(sh.ground.firstSurface);
+      if (sh && !sh.putt && prev.phase === 'flight' && s.phase === 'ground') {
+        playLand(sh.ground.firstSurface);
+        for (const hit of sh.ground.hits) playBounce(hit.vn, sh.ground.firstSurface, hit.t * k);
+        const prof = rollProfile(sh.ground);
+        if (prof.length > 0) playRoll(prof, sh.ground.surface, prof[0]!.t * k);
+      }
       if (sh && (prev.phase === 'flight' || prev.phase === 'ground') && s.phase !== 'flight' && s.phase !== 'ground') {
+        cancelScheduled();
         if (sh.ground.event === 'holed') {
           playCup();
           if (s.mode === 'stroke') {
@@ -596,7 +767,8 @@ function useGameAudio() {
             playApplause(strokes <= h.par - 1 ? 1 : strokes === h.par ? 0.45 : 0.15);
           } else playApplause(1);
         } else if (sh.ground.event === 'water') {
-          // 물소리는 착지 때 이미 냈다
+          // 물에 바로 떨어졌으면 착지 때 이미 났고, 굴러서 빠졌으면 여기서
+          if (sh.ground.firstSurface !== 'water') playSplash();
         } else if (s.mode === 'ctp' && sh.ground.event === 'rest' && Math.hypot(holeOf(s).pin[0] - sh.ground.rest.x, holeOf(s).pin[1] - sh.ground.rest.z) < 3) {
           playApplause(0.6);
         }
@@ -611,6 +783,56 @@ function useGameAudio() {
       unsub();
       window.removeEventListener('pointerdown', wake);
       window.removeEventListener('keydown', wake);
+    };
+  }, []);
+}
+
+/** 배경 바람 소리: 메뉴에서는 약하게, 코스에서는 이 홀의 바람 속도에 맞춘다 */
+function useWindAmbient() {
+  const speed = useGame((s) => (s.phase === 'menu' ? 1 : s.wind.speed));
+  useEffect(() => {
+    setWindAmbient(speed);
+  }, [speed]);
+}
+
+/**
+ * 봇 차례를 진행한다: 조준 단계에 봇 차례가 되면 잠깐(0.9 s) 생각한 뒤 친다.
+ * 모두 봇이면 홀이 끝난 뒤에도 2.6 s 뒤 스스로 다음 홀로 넘어간다 (사람이 있으면 사람이 누른다).
+ * 시간은 setTimeout (배경 탭에서도 돈다). 같은 차례에서 상태가 여러 번 바뀌어도 타이머는 한 번만 건다.
+ */
+function useBotDriver() {
+  useEffect(() => {
+    let timer: number | undefined;
+    let armedFor = '';
+    const arm = () => {
+      const s = game.get();
+      const allBots = s.players.length > 0 && s.players.every((p) => p.isBot);
+      let key = '';
+      let wait = 0;
+      let run: (() => void) | null = null;
+      if (s.phase === 'aim' && isBotTurn(s)) {
+        key = `aim:${s.holePos}:${s.cur}:${s.ballId}:${s.attempt}`;
+        wait = 900;
+        run = () => void botTurn();
+      } else if (allBots && s.phase === 'holed') {
+        key = `holed:${s.holePos}`;
+        wait = 2600;
+        run = nextHole;
+      }
+      if (key === armedFor) return;
+      armedFor = key;
+      window.clearTimeout(timer);
+      timer = undefined;
+      if (run) {
+        const fn = run;
+        timer = window.setTimeout(fn, wait);
+      }
+    };
+    arm();
+    const unsub = game.subscribe(arm);
+    return () => {
+      unsub();
+      window.clearTimeout(timer);
     };
   }, []);
 }
@@ -639,6 +861,8 @@ export function GameHud({ onRange }: { onRange: () => void }) {
   const overview = useGame((s) => s.overview);
   const clubIdx = useGame((s) => s.clubIdx);
   useGameAudio();
+  useWindAmbient();
+  useBotDriver();
   if (phase === 'menu') {
     return (
       <div className="hud g-hud">
@@ -659,6 +883,7 @@ export function GameHud({ onRange }: { onRange: () => void }) {
       <Rating />
       <ScoreCard />
       <MuteButton />
+      <TouchControls />
       <div className="g-bottom panel">
         <ClubBar />
         <SwingMeterView />
@@ -683,6 +908,7 @@ export function GameHud({ onRange }: { onRange: () => void }) {
           <span>
             <kbd>M</kbd> 소리
           </span>
+          <span className="g-keys-touch">화면을 좌우로 끌면 조준</span>
           <button type="button" className="g-link" onClick={toggleOverview}>
             {overview ? '공 시점으로' : '홀 전체 보기'}
           </button>
@@ -694,4 +920,3 @@ export function GameHud({ onRange }: { onRange: () => void }) {
     </div>
   );
 }
-

@@ -1,4 +1,6 @@
-//! 장 하나 골프공 비행 엔진의 러스트 판본과 병목 측정.
+//! [옛 프로토타입 — 지금의 엔진·시험대가 아니다] 장 하나 골프공 비행 엔진의 첫 러스트 판본과 병목 측정(2026-10-08).
+//! 현재 엔진은 `src/engine.rs`, 시험대는 `src/bin/quick.rs`. 이 파일은 당시 병목 분해 숫자를 다시 뽑을 때만 쓴다:
+//! `cargo run --release --bin flightbench` (Cargo.toml 의 default-run 은 `quick` 이라 `cargo run` 은 이 파일을 돌리지 않는다).
 //!
 //! 무차원 방정식 (higgs_engine.py 와 같음)
 //!   du/dt = -|u| conj(Gamma(S)) u - i,  dw/dt = -0.06 w |u|,  S = w/|u|
@@ -26,7 +28,6 @@
 //! cargo run --release
 
 use std::f64::consts::FRAC_PI_4;
-use std::hint::black_box;
 use std::time::Instant;
 
 const BETA: f64 = 0.06;
@@ -490,33 +491,9 @@ impl FieldTex {
 
 // ------------------------------------------------------------------ 보조
 
-struct Rng(u64);
-impl Rng {
-    fn next(&mut self) -> f64 {
-        self.0 ^= self.0 << 13;
-        self.0 ^= self.0 >> 7;
-        self.0 ^= self.0 << 17;
-        (self.0 >> 11) as f64 / (1u64 << 53) as f64
-    }
-    fn uni(&mut self, a: f64, b: f64) -> f64 {
-        a + (b - a) * self.next()
-    }
-    fn gauss(&mut self) -> f64 {
-        let (u1, u2) = (self.next().max(1e-300), self.next());
-        (-2.0 * u1.ln()).sqrt() * (2.0 * std::f64::consts::PI * u2).cos()
-    }
-}
+// 난수·측정 도우미는 엔진 모듈의 것 하나를 쓴다 (이 파일에 복사본을 두지 않는다)
+use flightbench::engine::{bench, Rng};
 
-/// 같은 일을 reps 번 반복해 가장 빠른 한 번의 샷당 ns 를 낸다.
-fn bench<F: FnMut() -> f64>(n_shots: usize, reps: usize, mut f: F) -> f64 {
-    let mut best = f64::INFINITY;
-    for _ in 0..reps {
-        let t0 = Instant::now();
-        black_box(f());
-        best = best.min(t0.elapsed().as_nanos() as f64 / n_shots as f64);
-    }
-    best
-}
 
 fn stats(err: &[f64]) -> (f64, f64) {
     let rmse = (err.iter().map(|e| e * e).sum::<f64>() / err.len() as f64).sqrt();
